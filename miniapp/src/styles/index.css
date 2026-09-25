@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  background-color: var(--tg-theme-bg-color, #1c1c1e);
+  color: var(--tg-theme-text-color, #ffffff);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+  padding-bottom: 72px;
+}
+
+.profit-positive {
+  color: #34c759;
+}
+
+.profit-negative {
+  color: #ff453a;
+}
+
+.card {
+  @apply bg-tg-secondary rounded-xl p-4 mb-3;
+}
+
+.table-row {
+  @apply flex items-center justify-between py-2 border-b border-white/10 last:border-0;
+}
+
+.tab-bar {
+  @apply fixed bottom-0 left-0 right-0 flex bg-tg-secondary border-t border-white/10;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.tab-item {
+  @apply flex-1 py-3 text-center text-xs text-tg-hint transition-colors;
+}
+
+.tab-item.active {
+  @apply text-tg-link font-medium;
+}
+
+.player-link {
+  @apply text-tg-link cursor-pointer underline-offset-2 hover:underline;
+}
+
+.page-header {
+  @apply text-lg font-semibold mb-4 px-4 pt-4;
+}
+
+.page-content {
+  @apply px-4;
+}
+
+.stat-grid {
+  @apply grid grid-cols-2 gap-2 mb-4;
+}
+
+.stat-box {
+  @apply bg-tg-secondary rounded-lg p-3 text-center;
+}
+
+.stat-label {
+  @apply text-xs text-tg-hint mb-1;
+}
+
+.stat-value {
+  @apply text-lg font-semibold;
+}

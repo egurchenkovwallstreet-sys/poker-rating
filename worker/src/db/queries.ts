@@ -1,0 +1,463 @@
+import type { SqlStorage } from '@cloudflare/workers-types';
+import type {
+  Game,
+  GameResult,
+  GameWithResults,
+  MonthStatRow,
+  OverallStatRow,
+  Player,
+  PlayerProfile,
+} from '../types';
+
+export function initSchema(sql: SqlStorage, schemaSql: string): void {
+  for (const statement of schemaSql.split(';').map((s) => s.trim()).filter(Boolean)) {
+    sql.exec(statement);
+  }
+  migrateSchema(sql);
+}
+
+function migrateSchema(sql: SqlStorage): void {
+  try {
+    const cols = [...sql.exec('PRAGMA table_info(players)').toArray()] as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'avatar_file_id')) {
+      sql.exec('ALTER TABLE players ADD COLUMN avatar_file_id TEXT');
+    }
+  } catch (e) {
+    console.error('migrate players.avatar_file_id:', e);
+  }
+  try {
+    sql.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_players_telegram_id ON players(telegram_id) WHERE telegram_id IS NOT NULL',
+    );
+  } catch (e) {
+    console.error('migrate idx_players_telegram_id:', e);
+  }
+}
+
+export function addPlayer(sql: SqlStorage, name: string, telegramId?: number): Player {
+  const now = Date.now();
+  sql.exec(
+    'INSERT INTO players (name, telegram_id, created_at) VALUES (?, ?, ?)',
+    name.trim(),
+    telegramId ?? null,
+    now,
+  );
+  const row = sql.exec('SELECT * FROM players WHERE name = ? COLLATE NOCASE', name.trim()).one();
+  return row as unknown as Player;
+}
+
+export function removePlayer(sql: SqlStorage, name: string): boolean {
+  const cursor = sql.exec('DELETE FROM players WHERE name = ? COLLATE NOCASE', name.trim());
+  return cursor.rowsWritten > 0;
+}
+
+export function listPlayers(sql: SqlStorage): Player[] {
+  return [...sql.exec('SELECT * FROM players ORDER BY name COLLATE NOCASE').toArray()] as unknown as Player[];
+}
+
+function firstRow<T>(sql: SqlStorage, query: string, ...params: unknown[]): T | null {
+  const rows = [...sql.exec(query, ...params).toArray()];
+  return rows.length ? (rows[0] as T) : null;
+}
+
+export function getPlayerById(sql: SqlStorage, id: number): Player | null {
+  return firstRow<Player>(sql, 'SELECT * FROM players WHERE id = ?', id);
+}
+
+export function getPlayerByTelegramId(sql: SqlStorage, telegramId: number): Player | null {
+  return firstRow<Player>(sql, 'SELECT * FROM players WHERE telegram_id = ?', telegramId);
+}
+
+export function registerPlayer(
+  sql: SqlStorage,
+  name: string,
+  telegramId: number,
+  avatarFileId?: string | null,
+): Player {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Имя не может быть пустым');
+  if (getPlayerByTelegramId(sql, telegramId)) throw new Error('Вы уже зарегистрированы');
+  if (firstRow(sql, 'SELECT id FROM players WHERE name = ? COLLATE NOCASE', trimmed)) {
+    throw new Error('Такое имя уже занято');
+  }
+  const now = Date.now();
+  sql.exec(
+    'INSERT INTO players (name, telegram_id, avatar_file_id, created_at) VALUES (?, ?, ?, ?)',
+    trimmed,
+    telegramId,
+    avatarFileId ?? null,
+    now,
+  );
+  return getPlayerByTelegramId(sql, telegramId)!;
+}
+
+export function updatePlayerName(sql: SqlStorage, telegramId: number, name: string): Player {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Имя не может быть пустым');
+  const current = getPlayerByTelegramId(sql, telegramId);
+  if (!current) throw new Error('Сначала зарегистрируйтесь: /register');
+  if (
+    firstRow(sql, 'SELECT id FROM players WHERE name = ? COLLATE NOCASE AND id != ?', trimmed, current.id)
+  ) {
+    throw new Error('Такое имя уже занято');
+  }
+  sql.exec('UPDATE players SET name = ? WHERE telegram_id = ?', trimmed, telegramId);
+  return getPlayerByTelegramId(sql, telegramId)!;
+}
+
+export function removePlayerByTelegramId(sql: SqlStorage, telegramId: number): boolean {
+  const cursor = sql.exec('DELETE FROM players WHERE telegram_id = ?', telegramId);
+  return cursor.rowsWritten > 0;
+}
+
+export function setPlayerAvatar(sql: SqlStorage, telegramId: number, avatarFileId: string | null): Player {
+  const current = getPlayerByTelegramId(sql, telegramId);
+  if (!current) throw new Error('Сначала зарегистрируйтесь: /register');
+  sql.exec('UPDATE players SET avatar_file_id = ? WHERE telegram_id = ?', avatarFileId, telegramId);
+  return getPlayerByTelegramId(sql, telegramId)!;
+}
+
+export function createGame(sql: SqlStorage, playerIds: number[], createdBy: number): number {
+  const now = Date.now();
+  sql.exec(
+    'INSERT INTO games (date, status, created_by, created_at) VALUES (?, ?, ?, ?)',
+    now,
+    'draft',
+    createdBy,
+    now,
+  );
+  const game = sql.exec('SELECT id FROM games ORDER BY id DESC LIMIT 1').one() as { id: number };
+  for (const playerId of playerIds) {
+    sql.exec(
+      'INSERT INTO game_results (game_id, player_id, buyin, payout, profit, place) VALUES (?, ?, 0, 0, 0, NULL)',
+      game.id,
+      playerId,
+    );
+  }
+  return game.id;
+}
+
+export function addOrUpdateResult(
+  sql: SqlStorage,
+  gameId: number,
+  playerId: number,
+  buyin: number,
+  payout: number,
+  place?: number,
+): void {
+  const profit = payout - buyin;
+  const existing = sql
+    .exec('SELECT id FROM game_results WHERE game_id = ? AND player_id = ?', gameId, playerId)
+    .one();
+  if (existing) {
+    sql.exec(
+      'UPDATE game_results SET buyin = ?, payout = ?, profit = ?, place = ? WHERE game_id = ? AND player_id = ?',
+      buyin,
+      payout,
+      profit,
+      place ?? null,
+      gameId,
+      playerId,
+    );
+  } else {
+    sql.exec(
+      'INSERT INTO game_results (game_id, player_id, buyin, payout, profit, place) VALUES (?, ?, ?, ?, ?, ?)',
+      gameId,
+      playerId,
+      buyin,
+      payout,
+      profit,
+      place ?? null,
+    );
+  }
+}
+
+export function getGameProfitSum(sql: SqlStorage, gameId: number): number {
+  const row = sql
+    .exec('SELECT COALESCE(SUM(profit), 0) as total FROM game_results WHERE game_id = ?', gameId)
+    .one() as { total: number };
+  return row.total;
+}
+
+export function finishGame(sql: SqlStorage, gameId: number): { ok: true } | { ok: false; error: string } {
+  const game = sql.exec('SELECT * FROM games WHERE id = ?', gameId).one();
+  if (!game) return { ok: false, error: 'Игра не найдена' };
+  if ((game as unknown as Game).status === 'finished') return { ok: false, error: 'Игра уже завершена' };
+
+  const total = getGameProfitSum(sql, gameId);
+  if (total !== 0) {
+    return { ok: false, error: `Сумма profit должна быть 0, сейчас: ${total}` };
+  }
+
+  const results = sql
+    .exec('SELECT player_id, profit FROM game_results WHERE game_id = ? ORDER BY profit DESC', gameId)
+    .toArray() as Array<{ player_id: number; profit: number }>;
+
+  let place = 1;
+  for (let i = 0; i < results.length; i++) {
+    if (i > 0 && results[i].profit < results[i - 1].profit) place = i + 1;
+    sql.exec(
+      'UPDATE game_results SET place = ? WHERE game_id = ? AND player_id = ?',
+      place,
+      gameId,
+      results[i].player_id,
+    );
+  }
+
+  sql.exec('UPDATE games SET status = ?, date = ? WHERE id = ?', 'finished', Date.now(), gameId);
+  return { ok: true };
+}
+
+export function deleteGame(sql: SqlStorage, gameId: number): boolean {
+  sql.exec('DELETE FROM game_results WHERE game_id = ?', gameId);
+  const cursor = sql.exec('DELETE FROM games WHERE id = ?', gameId);
+  return cursor.rowsWritten > 0;
+}
+
+export function getGameWithResults(sql: SqlStorage, gameId: number): GameWithResults | null {
+  const game = sql.exec('SELECT * FROM games WHERE id = ?', gameId).one();
+  if (!game) return null;
+
+  const results = [
+    ...sql
+      .exec(
+        `SELECT gr.*, p.name as player_name
+         FROM game_results gr
+         JOIN players p ON p.id = gr.player_id
+         WHERE gr.game_id = ?
+         ORDER BY gr.profit DESC`,
+        gameId,
+      )
+      .toArray(),
+  ] as unknown as Array<GameResult & { player_name: string }>;
+
+  return { game: game as unknown as Game, results };
+}
+
+export function getLastGame(sql: SqlStorage): GameWithResults | null {
+  const game = sql
+    .exec("SELECT * FROM games WHERE status = 'finished' ORDER BY date DESC LIMIT 1")
+    .one();
+  if (!game) return null;
+  return getGameWithResults(sql, (game as unknown as Game).id);
+}
+
+export function listDraftGames(sql: SqlStorage): Game[] {
+  return [
+    ...sql.exec("SELECT * FROM games WHERE status = 'draft' ORDER BY created_at DESC").toArray(),
+  ] as unknown as Game[];
+}
+
+export function listFinishedGames(sql: SqlStorage, limit = 20): Game[] {
+  return [
+    ...sql
+      .exec("SELECT * FROM games WHERE status = 'finished' ORDER BY date DESC LIMIT ?", limit)
+      .toArray(),
+  ] as unknown as Game[];
+}
+
+export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
+  const [year, mon] = month.split('-').map(Number);
+  const start = new Date(year, mon - 1, 1).getTime();
+  const end = new Date(year, mon, 1).getTime();
+
+  const rows = [
+    ...sql
+      .exec(
+        `SELECT
+           p.id as player_id,
+           p.name,
+           COUNT(DISTINCT g.id) as games_count,
+           COALESCE(SUM(gr.profit), 0) as total_profit,
+           COALESCE(MAX(gr.profit), 0) as best_game,
+           COALESCE(MIN(gr.profit), 0) as worst_game,
+           SUM(CASE WHEN gr.profit > 0 THEN 1 ELSE 0 END) as wins
+         FROM players p
+         JOIN game_results gr ON gr.player_id = p.id
+         JOIN games g ON g.id = gr.game_id
+         WHERE g.status = 'finished' AND g.date >= ? AND g.date < ?
+         GROUP BY p.id, p.name
+         ORDER BY total_profit DESC`,
+        start,
+        end,
+      )
+      .toArray(),
+  ] as Array<{
+    player_id: number;
+    name: string;
+    games_count: number;
+    total_profit: number;
+    best_game: number;
+    worst_game: number;
+    wins: number;
+  }>;
+
+  return rows.map((r) => ({
+    ...r,
+    winrate: r.games_count > 0 ? Math.round((r.wins / r.games_count) * 100) : 0,
+  }));
+}
+
+export function getOverall(sql: SqlStorage): OverallStatRow[] {
+  const rows = [
+    ...sql
+      .exec(
+        `SELECT
+           p.id as player_id,
+           p.name,
+           COUNT(DISTINCT g.id) as games_count,
+           COALESCE(SUM(gr.profit), 0) as total_profit,
+           COALESCE(SUM(gr.buyin), 0) as total_buyin,
+           SUM(CASE WHEN gr.profit > 0 THEN 1 ELSE 0 END) as wins
+         FROM players p
+         JOIN game_results gr ON gr.player_id = p.id
+         JOIN games g ON g.id = gr.game_id
+         WHERE g.status = 'finished'
+         GROUP BY p.id, p.name
+         ORDER BY total_profit DESC`,
+      )
+      .toArray(),
+  ] as Array<{
+    player_id: number;
+    name: string;
+    games_count: number;
+    total_profit: number;
+    total_buyin: number;
+    wins: number;
+  }>;
+
+  return rows.map((r, i) => ({
+    player_id: r.player_id,
+    name: r.name,
+    place: i + 1,
+    games_count: r.games_count,
+    total_profit: r.total_profit,
+    wins: r.wins,
+    winrate: r.games_count > 0 ? Math.round((r.wins / r.games_count) * 100) : 0,
+    roi: r.total_buyin > 0 ? Math.round((r.total_profit / r.total_buyin) * 100) : 0,
+    streak: computeStreak(sql, r.player_id),
+  }));
+}
+
+function computeStreak(sql: SqlStorage, playerId: number): number {
+  const profits = [
+    ...sql
+      .exec(
+        `SELECT gr.profit
+         FROM game_results gr
+         JOIN games g ON g.id = gr.game_id
+         WHERE gr.player_id = ? AND g.status = 'finished'
+         ORDER BY g.date DESC
+         LIMIT 20`,
+        playerId,
+      )
+      .toArray(),
+  ] as Array<{ profit: number }>;
+
+  if (profits.length === 0) return 0;
+
+  const sign = profits[0].profit >= 0 ? 1 : -1;
+  let streak = 0;
+  for (const p of profits) {
+    const s = p.profit >= 0 ? 1 : -1;
+    if (s === sign) streak += sign;
+    else break;
+  }
+  return streak;
+}
+
+export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfile | null {
+  const player = getPlayerById(sql, playerId);
+  if (!player) return null;
+
+  const stats = sql
+    .exec(
+      `SELECT COUNT(DISTINCT g.id) as games_count, COALESCE(SUM(gr.profit), 0) as total_profit
+       FROM game_results gr
+       JOIN games g ON g.id = gr.game_id
+       WHERE gr.player_id = ? AND g.status = 'finished'`,
+      playerId,
+    )
+    .one() as { games_count: number; total_profit: number };
+
+  const gameProfits = [
+    ...sql
+      .exec(
+        `SELECT g.id as game_id, g.date, gr.profit
+         FROM game_results gr
+         JOIN games g ON g.id = gr.game_id
+         WHERE gr.player_id = ? AND g.status = 'finished'
+         ORDER BY g.date ASC`,
+        playerId,
+      )
+      .toArray(),
+  ] as Array<{ game_id: number; date: number; profit: number }>;
+
+  let cumulative = 0;
+  const chart = gameProfits.map((g) => {
+    cumulative += g.profit;
+    return { ...g, cumulative };
+  });
+
+  const history = [
+    ...sql
+      .exec(
+        `SELECT g.id as game_id, g.date, gr.buyin, gr.payout, gr.profit, gr.place
+         FROM game_results gr
+         JOIN games g ON g.id = gr.game_id
+         WHERE gr.player_id = ? AND g.status = 'finished'
+         ORDER BY g.date DESC
+         LIMIT 10`,
+        playerId,
+      )
+      .toArray(),
+  ] as PlayerProfile['history'];
+
+  return {
+    player,
+    games_count: stats.games_count,
+    total_profit: stats.total_profit,
+    chart,
+    history,
+  };
+}
+
+export function getSession(
+  sql: SqlStorage,
+  userId: number,
+): { state: string; data: Record<string, unknown> } | null {
+  const row = firstRow<{ state: string; data: string }>(
+    sql,
+    'SELECT state, data FROM bot_sessions WHERE user_id = ?',
+    userId,
+  );
+  if (!row) return null;
+  const r = row;
+  return { state: r.state, data: JSON.parse(r.data || '{}') };
+}
+
+export function setSession(
+  sql: SqlStorage,
+  userId: number,
+  state: string,
+  data: Record<string, unknown>,
+): void {
+  const now = Date.now();
+  const existing = firstRow(sql, 'SELECT user_id FROM bot_sessions WHERE user_id = ?', userId);
+  const json = JSON.stringify(data);
+  if (existing) {
+    sql.exec('UPDATE bot_sessions SET state = ?, data = ?, updated_at = ? WHERE user_id = ?', state, json, now, userId);
+  } else {
+    sql.exec(
+      'INSERT INTO bot_sessions (user_id, state, data, updated_at) VALUES (?, ?, ?, ?)',
+      userId,
+      state,
+      json,
+      now,
+    );
+  }
+}
+
+export function clearSession(sql: SqlStorage, userId: number): void {
+  sql.exec('DELETE FROM bot_sessions WHERE user_id = ?', userId);
+}
