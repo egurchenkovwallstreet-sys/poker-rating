@@ -5,13 +5,18 @@ const API_URL = import.meta.env.VITE_API_URL || '';
 function getInitData(): string {
   try {
     const { initDataRaw } = retrieveLaunchParams();
-    return initDataRaw || '';
+    if (initDataRaw) return initDataRaw;
   } catch {
-    return '';
+    /* outside SDK */
   }
+  const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
+  return tg?.initData || '';
 }
 
 async function fetchApi<T>(path: string): Promise<T> {
+  if (!API_URL) {
+    throw new Error('API URL не настроен (VITE_API_URL)');
+  }
   const res = await fetch(`${API_URL}${path}`, {
     headers: {
       'X-Telegram-Init-Data': getInitData(),

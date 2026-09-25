@@ -13,6 +13,6 @@ tag = "v1"
 new_sqlite_classes = ["PokerRoom"]
 
 [vars]
-WEBAPP_URL = "https://YOUR_USERNAME.github.io/poker-rating/"
+WEBAPP_URL = "https://egurchenkovwallstreet-sys.github.io/poker-rating/"
 BOT_USERNAME = "poker_rating_bot"
 ADMIN_IDS = "[1026681672]"

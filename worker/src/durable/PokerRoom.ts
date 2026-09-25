@@ -116,6 +116,10 @@ export class PokerRoom implements DurableObject {
         case 'clearSession':
           db.clearSession(this.sql, body.userId);
           return json({ ok: true });
+        case 'seedDemo': {
+          const result = db.seedDemo(this.sql, body.createdBy);
+          return json({ ok: true, ...result });
+        }
         default:
           return json({ ok: false, error: 'Unknown action' }, 400);
       }

@@ -118,6 +118,21 @@ export function createBot(env: Env): Bot {
     await ctx.reply('🔧 Админ-меню', { reply_markup: adminMenu() });
   });
 
+  bot.command('seeddemo', async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
+    try {
+      const res = await callDo<{ ok: boolean; players: number; games: number }>(env, {
+        action: 'seedDemo',
+        createdBy: ctx.from!.id,
+      });
+      await ctx.reply(
+        `✅ Демо-данные созданы:\n• игроков: ${res.players}\n• игр: ${res.games}\n\nОткройте Mini App.`,
+      );
+    } catch (e) {
+      await ctx.reply(`❌ ${e}`);
+    }
+  });
+
   bot.command('players', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
     const res = await callDo<{ ok: boolean; players: Array<{ id: number; name: string }> }>(env, {

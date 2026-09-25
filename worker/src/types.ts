@@ -98,4 +98,5 @@ export type DoAction =
   | { action: 'getPlayer'; playerId: number }
   | { action: 'getSession'; userId: number }
   | { action: 'setSession'; userId: number; state: string; data: Record<string, unknown> }
-  | { action: 'clearSession'; userId: number };
+  | { action: 'clearSession'; userId: number }
+  | { action: 'seedDemo'; createdBy: number };

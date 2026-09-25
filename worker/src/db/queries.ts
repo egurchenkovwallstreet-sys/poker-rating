@@ -461,3 +461,53 @@ export function setSession(
 export function clearSession(sql: SqlStorage, userId: number): void {
   sql.exec('DELETE FROM bot_sessions WHERE user_id = ?', userId);
 }
+
+/** Тестовые игроки и игры для проверки Mini App (сумма profit = 0). */
+export function seedDemo(sql: SqlStorage, createdBy: number): { players: number; games: number } {
+  const names = ['Иван', 'Мария', 'Олег', 'Петр', 'Саша'];
+  const playerIds: number[] = [];
+  for (const name of names) {
+    let row = firstRow<{ id: number }>(sql, 'SELECT id FROM players WHERE name = ? COLLATE NOCASE', name);
+    if (!row) {
+      addPlayer(sql, name);
+      row = firstRow<{ id: number }>(sql, 'SELECT id FROM players WHERE name = ? COLLATE NOCASE', name)!;
+    }
+    playerIds.push(row.id);
+  }
+
+  const gameSets: Array<Array<[number, number, number]>> = [
+    [
+      [0, 1000, 2500],
+      [1, 1000, 0],
+      [2, 1000, 500],
+      [3, 1000, 0],
+      [4, 1000, 2000],
+    ],
+    [
+      [0, 2000, 0],
+      [1, 2000, 4000],
+      [2, 2000, 1000],
+      [3, 2000, 2000],
+      [4, 2000, 3000],
+    ],
+    [
+      [0, 1500, 3000],
+      [1, 1500, 1500],
+      [2, 1500, 0],
+      [3, 1500, 1500],
+      [4, 1500, 1500],
+    ],
+  ];
+
+  let gamesCreated = 0;
+  for (const set of gameSets) {
+    const gameId = createGame(sql, playerIds, createdBy);
+    for (const [idx, buyin, payout] of set) {
+      addOrUpdateResult(sql, gameId, playerIds[idx], buyin, payout);
+    }
+    const fin = finishGame(sql, gameId);
+    if (fin.ok) gamesCreated++;
+  }
+
+  return { players: playerIds.length, games: gamesCreated };
+}

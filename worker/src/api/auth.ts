@@ -2,7 +2,7 @@ import { validate } from '@telegram-apps/init-data-node';
 
 export function validateInitData(initData: string, botToken: string): { userId: number } | null {
   try {
-    validate(initData, botToken, { expiresIn: 86400 });
+    validate(initData, botToken.trim(), { expiresIn: 86400 });
     const params = new URLSearchParams(initData);
     const userStr = params.get('user');
     if (!userStr) return null;
