@@ -8,8 +8,8 @@ const BOT_USERNAME = import.meta.env.VITE_BOT_USERNAME || 'poker_rating_bot';
 /** Дублирует ADMIN_IDS с Worker (запасная проверка, если /api/me недоступен) */
 const FALLBACK_ADMIN_IDS = (import.meta.env.VITE_ADMIN_IDS || '1026681672,853510383')
   .split(',')
-  .map((s) => parseInt(s.trim(), 10))
-  .filter((n) => !Number.isNaN(n));
+  .map((s: string) => parseInt(s.trim(), 10))
+  .filter((n: number) => !Number.isNaN(n));
 
 function telegramUserId(): number | null {
   const tg = (window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { user?: { id?: number } } } } })

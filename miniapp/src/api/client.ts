@@ -1,32 +1,12 @@
-import { retrieveLaunchParams } from '@telegram-apps/sdk-react';
-
 const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
-
-function initDataFromHash(): string {
-  const hash = window.location.hash?.replace(/^#/, '') || '';
-  if (!hash) return '';
-  const params = new URLSearchParams(hash);
-  const tgData = params.get('tgWebAppData');
-  if (tgData) return decodeURIComponent(tgData);
-  return '';
-}
 
 function readInitDataSync(): string {
   const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
-  if (tg?.initData) return tg.initData;
-  const fromHash = initDataFromHash();
-  if (fromHash) return fromHash;
-  try {
-    const { initDataRaw } = retrieveLaunchParams();
-    if (initDataRaw) return initDataRaw;
-  } catch {
-    /* outside SDK */
-  }
-  return '';
+  return tg?.initData?.trim() || '';
 }
 
 /** Telegram иногда отдаёт initData с задержкой после открытия Web App с клавиатуры */
-export async function waitForInitData(timeoutMs = 8000): Promise<string> {
+export async function waitForInitData(timeoutMs = 10000): Promise<string> {
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
   tg?.ready?.();
 
@@ -49,15 +29,15 @@ async function fetchApi<T>(path: string): Promise<T> {
   }
 
   const pathWithQuery = path.startsWith('/') ? path : `/${path}`;
-  const sep = pathWithQuery.includes('?') ? '&' : '?';
-  const url = `${API_URL}${pathWithQuery}${sep}initData=${encodeURIComponent(initData)}`;
-
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetch(`${API_URL}${pathWithQuery}`, {
+      method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
         'X-Telegram-Init-Data': initData,
       },
+      body: JSON.stringify({ initData }),
     });
   } catch {
     throw new Error('NETWORK');
@@ -137,20 +117,11 @@ export function apiErrorMessage(code: string): string {
     case 'NETWORK':
       return 'Нет связи с сервером. Проверьте интернет.';
     case 'API_401':
-      return 'Сессия устарела. Закройте Mini App и откройте снова.';
+      return 'Сессия устарела или неверный BOT_TOKEN на сервере. Закройте Mini App и откройте снова.';
     case 'API_404':
       return 'Сервер бота устарел — нужен deploy Worker.';
     default:
       return 'Не удалось загрузить данные';
-  }
-}
-
-export async function apiCall<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : '';
-    throw new Error(apiErrorMessage(msg));
   }
 }
 

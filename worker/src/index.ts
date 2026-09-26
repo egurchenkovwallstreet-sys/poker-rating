@@ -12,7 +12,7 @@ app.use(
   '/api/*',
   cors({
     origin: '*',
-    allowMethods: ['GET', 'HEAD', 'OPTIONS'],
+    allowMethods: ['GET', 'HEAD', 'POST', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'X-Telegram-Init-Data'],
   }),
 );

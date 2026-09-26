@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { validate } from '@telegram-apps/init-data-node';
 
 const INIT_DATA_TTL_SEC = 86400 * 7;
@@ -14,9 +14,21 @@ function safeEqualHex(a: string, b: string): boolean {
   }
 }
 
-/** Проверка подписи initData по документации Telegram (HMAC-SHA256). */
-function validateInitDataTelegram(initData: string, botToken: string): boolean {
+function hmacSha256(key: Buffer | string, data: string): Buffer {
+  return createHmac('sha256', key).update(data).digest();
+}
+
+function matchInitDataHash(dataCheckString: string, botToken: string, expectedHash: string): boolean {
   const token = botToken.trim();
+  const hashes = [
+    hmacSha256(hmacSha256(token, 'WebAppData'), dataCheckString).toString('hex'),
+    hmacSha256(hmacSha256('WebAppData', token), dataCheckString).toString('hex'),
+  ];
+  return hashes.some((h) => safeEqualHex(h, expectedHash));
+}
+
+/** Проверка подписи initData (HMAC-SHA256). */
+function validateInitDataTelegram(initData: string, botToken: string): boolean {
   const params = new URLSearchParams(initData);
   const hash = params.get('hash');
   if (!hash) return false;
@@ -33,9 +45,7 @@ function validateInitDataTelegram(initData: string, botToken: string): boolean {
     .map(([k, v]) => `${k}=${v}`)
     .join('\n');
 
-  const secretKey = createHmac('sha256', token).update('WebAppData').digest();
-  const calculatedHash = createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-  return safeEqualHex(calculatedHash, hash);
+  return matchInitDataHash(dataCheckString, botToken, hash);
 }
 
 export function validateInitData(initData: string, botToken: string): { userId: number } | null {
