@@ -35,7 +35,9 @@ export default function MonthStats({ onSelectPlayer }: Props) {
     api
       .getMonthStats(m)
       .then((res) => setStats(res.stats))
-      .catch(() => setError('Не удалось загрузить данные'));
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : 'Не удалось загрузить данные'),
+      );
   };
 
   useEffect(() => load(month), [month]);

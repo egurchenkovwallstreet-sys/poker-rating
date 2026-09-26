@@ -18,7 +18,9 @@ export default function Overall({ onSelectPlayer }: Props) {
     api
       .getOverall()
       .then((res) => setStats(res.stats))
-      .catch(() => setError('Не удалось загрузить данные'));
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : 'Не удалось загрузить данные'),
+      );
   };
 
   useEffect(load, []);

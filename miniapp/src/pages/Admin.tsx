@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api/client';
+import { api, apiErrorMessage } from '../api/client';
 import ErrorState from '../components/ErrorState';
 import Loading from '../components/Loading';
 
@@ -50,17 +50,7 @@ export default function Admin() {
           setAllowed(true);
           return;
         }
-        if (msg === 'NO_INIT_DATA') {
-          setError('Откройте «Админ» из кнопки внизу в чате с ботом (не из браузера).');
-        } else if (msg === 'API error: 401') {
-          setError('Сессия Telegram устарела. Закройте Mini App и снова нажмите «Админ».');
-        } else if (msg === 'API error: 404') {
-          setError('Сервер бота устарел. Админу нужен deploy Worker (npm run deploy).');
-        } else if (msg.includes('VITE_API_URL')) {
-          setError('Mini App не знает адрес API. Проверьте VITE_API_URL в GitHub Variables.');
-        } else {
-          setError(`Не удалось проверить доступ (${msg || 'сеть'})`);
-        }
+        setError(apiErrorMessage(msg || 'NETWORK'));
       } finally {
         setLoading(false);
       }

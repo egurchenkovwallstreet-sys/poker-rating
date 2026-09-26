@@ -1,10 +1,21 @@
 import { retrieveLaunchParams } from '@telegram-apps/sdk-react';
 
-const API_URL = import.meta.env.VITE_API_URL || '';
+const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+
+function initDataFromHash(): string {
+  const hash = window.location.hash?.replace(/^#/, '') || '';
+  if (!hash) return '';
+  const params = new URLSearchParams(hash);
+  const tgData = params.get('tgWebAppData');
+  if (tgData) return decodeURIComponent(tgData);
+  return '';
+}
 
 function readInitDataSync(): string {
   const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
   if (tg?.initData) return tg.initData;
+  const fromHash = initDataFromHash();
+  if (fromHash) return fromHash;
   try {
     const { initDataRaw } = retrieveLaunchParams();
     if (initDataRaw) return initDataRaw;
@@ -15,31 +26,45 @@ function readInitDataSync(): string {
 }
 
 /** Telegram иногда отдаёт initData с задержкой после открытия Web App с клавиатуры */
-export async function waitForInitData(timeoutMs = 4000): Promise<string> {
+export async function waitForInitData(timeoutMs = 8000): Promise<string> {
+  const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
+  tg?.ready?.();
+
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const data = readInitDataSync();
     if (data) return data;
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 100));
   }
   return readInitDataSync();
 }
 
 async function fetchApi<T>(path: string): Promise<T> {
   if (!API_URL) {
-    throw new Error('API URL не настроен (VITE_API_URL)');
+    throw new Error('VITE_API_URL');
   }
   const initData = await waitForInitData();
   if (!initData) {
     throw new Error('NO_INIT_DATA');
   }
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: {
-      'X-Telegram-Init-Data': initData,
-    },
-  });
+
+  const pathWithQuery = path.startsWith('/') ? path : `/${path}`;
+  const sep = pathWithQuery.includes('?') ? '&' : '?';
+  const url = `${API_URL}${pathWithQuery}${sep}initData=${encodeURIComponent(initData)}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        'X-Telegram-Init-Data': initData,
+      },
+    });
+  } catch {
+    throw new Error('NETWORK');
+  }
+
   if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
+    throw new Error(`API_${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -101,6 +126,32 @@ export interface PlayerProfile {
 export interface MeResponse {
   userId: number;
   isAdmin: boolean;
+}
+
+export function apiErrorMessage(code: string): string {
+  switch (code) {
+    case 'NO_INIT_DATA':
+      return 'Нет данных Telegram. Закройте Mini App и откройте снова кнопкой внизу в чате с ботом.';
+    case 'VITE_API_URL':
+      return 'Mini App не настроен (VITE_API_URL).';
+    case 'NETWORK':
+      return 'Нет связи с сервером. Проверьте интернет.';
+    case 'API_401':
+      return 'Сессия устарела. Закройте Mini App и откройте снова.';
+    case 'API_404':
+      return 'Сервер бота устарел — нужен deploy Worker.';
+    default:
+      return 'Не удалось загрузить данные';
+  }
+}
+
+export async function apiCall<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '';
+    throw new Error(apiErrorMessage(msg));
+  }
 }
 
 export const api = {

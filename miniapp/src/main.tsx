@@ -4,10 +4,12 @@ import { init } from '@telegram-apps/sdk-react';
 import App from './App';
 import './styles/index.css';
 
+const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void; expand?: () => void } } })
+  .Telegram?.WebApp;
+tg?.ready?.();
+tg?.expand?.();
 try {
   init();
-  const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
-  tg?.ready?.();
 } catch {
   // dev outside Telegram
 }

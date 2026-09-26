@@ -18,7 +18,9 @@ export default function LastGame({ onSelectPlayer }: Props) {
     api
       .getLastGame()
       .then(setData)
-      .catch(() => setError('Не удалось загрузить данные'));
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : 'Не удалось загрузить данные'),
+      );
   };
 
   useEffect(load, []);
