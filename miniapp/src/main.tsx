@@ -6,6 +6,8 @@ import './styles/index.css';
 
 try {
   init();
+  const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
+  tg?.ready?.();
 } catch {
   // dev outside Telegram
 }
