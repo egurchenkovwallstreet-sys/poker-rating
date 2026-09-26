@@ -4,9 +4,7 @@ export function adminMenu() {
   return new InlineKeyboard()
     .text('👤 Игроки', 'admin:players')
     .row()
-    .text('🎮 Игры', 'admin:games')
-    .row()
-    .text('📊 Статистика', 'admin:stats');
+    .text('🎮 Игры', 'admin:games');
 }
 
 export function playersSubmenu() {
@@ -47,15 +45,6 @@ export function gamesSubmenu() {
     .text('✅ Завершить игру', 'admin:finish_game')
     .row()
     .text('🗑 Удалить игру', 'admin:delete_game')
-    .row()
-    .text('◀️ Назад', 'admin:back');
-}
-
-export function statsSubmenu(webappUrl: string) {
-  return new InlineKeyboard()
-    .webApp('📅 За месяц', `${webappUrl}?tab=month`)
-    .row()
-    .webApp('🏆 Общая', `${webappUrl}?tab=overall`)
     .row()
     .text('◀️ Назад', 'admin:back');
 }

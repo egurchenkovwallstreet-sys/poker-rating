@@ -13,7 +13,6 @@ import {
   adminMenu,
   gamesSubmenu,
   playersSubmenu,
-  statsSubmenu,
 } from './keyboards';
 import {
   deleteGameAction,
@@ -404,13 +403,6 @@ export function createBot(env: Env): Bot {
     if (data === 'admin:games') {
       if (!checkAdmin(userId)) return;
       await ctx.editMessageText('🎮 Управление играми', { reply_markup: gamesSubmenu() });
-      await ctx.answerCallbackQuery();
-      return;
-    }
-
-    if (data === 'admin:stats') {
-      if (!checkAdmin(userId)) return;
-      await ctx.editMessageText('📊 Статистика', { reply_markup: statsSubmenu(env.WEBAPP_URL) });
       await ctx.answerCallbackQuery();
       return;
     }
