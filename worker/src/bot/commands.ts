@@ -7,6 +7,7 @@ import {
   REGISTER_BUTTON_TEXT,
   STATS_BUTTON_TEXT,
   statsInlineKeyboard,
+  resetSideMenuButtonToDefault,
   syncUserBottomMenu,
 } from './bottom-menu';
 import {
@@ -227,6 +228,19 @@ export function createBot(env: Env): Bot {
       return;
     }
     await ctx.reply('🔧 Админ-меню', { reply_markup: adminMenu() });
+  });
+
+  bot.command('fixmenu', async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) {
+      await ctx.reply('⛔ Доступ запрещён');
+      return;
+    }
+    await resetSideMenuButtonToDefault(ctx.api, ctx.chat?.id);
+    const keyboard = await syncUserBottomMenu(ctx, env, ctx.from!.id);
+    await ctx.reply(
+      '✅ Боковая Menu Button сброшена (обычное меню Telegram). Статистика — только кнопка «📊 Статистика» внизу.',
+      { reply_markup: keyboard },
+    );
   });
 
   async function runSeedDemo(ctx: Context): Promise<void> {

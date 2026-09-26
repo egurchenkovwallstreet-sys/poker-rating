@@ -1,4 +1,4 @@
-import type { Context } from 'grammy';
+import type { Api, Context } from 'grammy';
 import { InlineKeyboard, Keyboard } from 'grammy';
 import { isAdmin, parseAdminIds } from '../api/auth';
 import { callDo } from '../db/do-client';
@@ -50,16 +50,26 @@ export async function buildBottomKeyboardForUser(
   };
 }
 
+/** Убирает Web App «Статистика» с боковой Menu Button (глобально + для чата). */
+export async function resetSideMenuButtonToDefault(api: Api, chatId?: number): Promise<void> {
+  const menu_button = { type: 'default' as const };
+  try {
+    await api.setChatMenuButton({ menu_button });
+  } catch (e) {
+    console.error('setChatMenuButton default (bot-wide) failed', e);
+  }
+  if (chatId != null) {
+    try {
+      await api.setChatMenuButton({ chat_id: chatId, menu_button });
+    } catch (e) {
+      console.error('setChatMenuButton default (chat) failed', e);
+    }
+  }
+}
+
 /** Reply-клавиатура внизу; боковую Menu Button (Web App) не используем. */
 export async function syncUserBottomMenu(ctx: Context, env: Env, telegramId: number): Promise<Keyboard> {
   const { keyboard } = await buildBottomKeyboardForUser(env, telegramId);
-  const chatId = ctx.chat?.id;
-  if (chatId) {
-    try {
-      await ctx.api.setChatMenuButton({ chat_id: chatId, menu_button: { type: 'default' } });
-    } catch (e) {
-      console.error('setChatMenuButton failed', e);
-    }
-  }
+  await resetSideMenuButtonToDefault(ctx.api, ctx.chat?.id);
   return keyboard;
 }
