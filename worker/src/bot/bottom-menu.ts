@@ -1,30 +1,45 @@
 import type { Context } from 'grammy';
-import { Keyboard } from 'grammy';
+import { InlineKeyboard, Keyboard } from 'grammy';
 import { isAdmin, parseAdminIds } from '../api/auth';
 import { callDo } from '../db/do-client';
 import type { Env } from '../types';
 
 /** Текст кнопки регистрации на нижней клавиатуре */
 export const REGISTER_BUTTON_TEXT = '✍️ Регистрация';
+export const STATS_BUTTON_TEXT = '📊 Статистика';
+export const ADMIN_BUTTON_TEXT = '🔧 Админ';
 
-function webappUrls(webappUrl: string): { stats: string; admin: string } {
+export function webappUrls(webappUrl: string): { stats: string; admin: string } {
   const base = webappUrl.endsWith('/') ? webappUrl : `${webappUrl}/`;
   return { stats: base, admin: `${base}?view=admin` };
 }
 
-export function buildBottomKeyboard(webappUrl: string, registered: boolean, admin: boolean): Keyboard {
-  const { stats, admin: adminUrl } = webappUrls(webappUrl);
+export function statsInlineKeyboard(webappUrl: string): InlineKeyboard {
+  const { stats } = webappUrls(webappUrl);
+  return new InlineKeyboard().webApp('📊 Открыть статистику', stats);
+}
+
+export function adminInlineKeyboard(webappUrl: string): InlineKeyboard {
+  const { admin } = webappUrls(webappUrl);
+  return new InlineKeyboard().webApp('🔧 Открыть админ-панель', admin);
+}
+
+/**
+ * Нижняя клавиатура — обычный текст (не web_app: у reply-кнопок часто нет initData).
+ * Mini App открывается через Menu Button или inline-кнопку в сообщении.
+ */
+export function buildBottomKeyboard(registered: boolean, userIsAdmin: boolean): Keyboard {
   if (!registered) {
     return new Keyboard().text(REGISTER_BUTTON_TEXT).resized().persistent();
   }
-  if (admin) {
+  if (userIsAdmin) {
     return new Keyboard()
-      .webApp('🔧 Админ', adminUrl)
-      .webApp('📊 Статистика', stats)
+      .text(ADMIN_BUTTON_TEXT)
+      .text(STATS_BUTTON_TEXT)
       .resized()
       .persistent();
   }
-  return new Keyboard().webApp('📊 Статистика', stats).resized().persistent();
+  return new Keyboard().text(STATS_BUTTON_TEXT).resized().persistent();
 }
 
 export async function buildBottomKeyboardForUser(
@@ -38,22 +53,34 @@ export async function buildBottomKeyboardForUser(
   const registered = Boolean(playerRes.player);
   const userIsAdmin = isAdmin(telegramId, parseAdminIds(env.ADMIN_IDS));
   return {
-    keyboard: buildBottomKeyboard(env.WEBAPP_URL, registered, userIsAdmin),
+    keyboard: buildBottomKeyboard(registered, userIsAdmin),
     registered,
     isAdmin: userIsAdmin,
   };
 }
 
-/** Нижняя клавиатура + сброс menu button (чтобы не дублировать с reply-клавиатурой) */
+/** Menu Button (слева от поля ввода) + reply-клавиатура */
 export async function syncUserBottomMenu(ctx: Context, env: Env, telegramId: number): Promise<Keyboard> {
+  const { keyboard, registered } = await buildBottomKeyboardForUser(env, telegramId);
   const chatId = ctx.chat?.id;
   if (chatId) {
     try {
-      await ctx.api.setChatMenuButton({ chat_id: chatId, menu_button: { type: 'default' } });
+      if (registered) {
+        const { stats } = webappUrls(env.WEBAPP_URL);
+        await ctx.api.setChatMenuButton({
+          chat_id: chatId,
+          menu_button: {
+            type: 'web_app',
+            text: '📊 Статистика',
+            web_app: { url: stats },
+          },
+        });
+      } else {
+        await ctx.api.setChatMenuButton({ chat_id: chatId, menu_button: { type: 'default' } });
+      }
     } catch (e) {
       console.error('setChatMenuButton failed', e);
     }
   }
-  const { keyboard } = await buildBottomKeyboardForUser(env, telegramId);
   return keyboard;
 }

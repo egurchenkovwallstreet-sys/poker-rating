@@ -1,8 +1,23 @@
 const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 
+function readInitDataFromUrl(): string {
+  const fromParams = (raw: string): string => {
+    if (!raw) return '';
+    const body = raw.startsWith('#') ? raw.slice(1) : raw;
+    const tg = new URLSearchParams(body).get('tgWebAppData');
+    return tg ? decodeURIComponent(tg) : '';
+  };
+  const hash = fromParams(window.location.hash);
+  if (hash) return hash;
+  const q = new URLSearchParams(window.location.search).get('tgWebAppData');
+  return q ? decodeURIComponent(q) : '';
+}
+
 function readInitDataSync(): string {
   const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
-  return tg?.initData?.trim() || '';
+  const direct = tg?.initData?.trim();
+  if (direct) return direct;
+  return readInitDataFromUrl();
 }
 
 /** Telegram иногда отдаёт initData с задержкой после открытия Web App с клавиатуры */

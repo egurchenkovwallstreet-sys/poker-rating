@@ -2,7 +2,14 @@ import { Bot, webhookCallback, type Context } from 'grammy';
 import { callDo } from '../db/do-client';
 import { isAdmin, parseAdminIds } from '../api/auth';
 import type { Env } from '../types';
-import { REGISTER_BUTTON_TEXT, syncUserBottomMenu } from './bottom-menu';
+import {
+  ADMIN_BUTTON_TEXT,
+  REGISTER_BUTTON_TEXT,
+  STATS_BUTTON_TEXT,
+  adminInlineKeyboard,
+  statsInlineKeyboard,
+  syncUserBottomMenu,
+} from './bottom-menu';
 import {
   adminMenu,
   gamesSubmenu,
@@ -62,8 +69,8 @@ export function createBot(env: Env): Bot {
     let intro: string;
     if (player) {
       intro = userIsAdmin
-        ? `👋 Снова здравствуйте, ${player.name}!\n\nВнизу: «Админ» и «Статистика».`
-        : `👋 Снова здравствуйте, ${player.name}!\n\nВнизу кнопка «Статистика».`;
+        ? `👋 Снова здравствуйте, ${player.name}!\n\n📊 Статистика — кнопка «Menu» слева от ввода или «${STATS_BUTTON_TEXT}» внизу → «Открыть» в чате.\n🔧 Админ — «${ADMIN_BUTTON_TEXT}» внизу → «Открыть».`
+        : `👋 Снова здравствуйте, ${player.name}!\n\n📊 «Menu» слева от ввода или «${STATS_BUTTON_TEXT}» внизу → «Открыть статистику».`;
     } else {
       intro =
         '👋 Добро пожаловать в Покерный рейтинг!\n\nНажмите «Регистрация» внизу и введите имя для рейтинга.';
@@ -145,6 +152,27 @@ export function createBot(env: Env): Bot {
       return;
     }
     await promptRegistration(ctx);
+  });
+
+  bot.hears(STATS_BUTTON_TEXT, async (ctx) => {
+    const player = await getMyPlayer(env, ctx.from!.id);
+    if (!player) {
+      await ctx.reply('Сначала зарегистрируйтесь — кнопка «Регистрация» внизу.');
+      return;
+    }
+    await ctx.reply('👇 Нажмите, чтобы открыть Mini App:', {
+      reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
+    });
+  });
+
+  bot.hears(ADMIN_BUTTON_TEXT, async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) {
+      await ctx.reply('⛔ Эта кнопка только для администратора.');
+      return;
+    }
+    await ctx.reply('👇 Админ-панель в Mini App:', {
+      reply_markup: adminInlineKeyboard(env.WEBAPP_URL),
+    });
   });
 
   bot.command('profile', async (ctx) => {
