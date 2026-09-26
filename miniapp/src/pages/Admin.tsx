@@ -5,6 +5,18 @@ import Loading from '../components/Loading';
 
 const BOT_USERNAME = import.meta.env.VITE_BOT_USERNAME || 'poker_rating_bot';
 
+/** Дублирует ADMIN_IDS с Worker (запасная проверка, если /api/me недоступен) */
+const FALLBACK_ADMIN_IDS = (import.meta.env.VITE_ADMIN_IDS || '1026681672,853510383')
+  .split(',')
+  .map((s) => parseInt(s.trim(), 10))
+  .filter((n) => !Number.isNaN(n));
+
+function telegramUserId(): number | null {
+  const tg = (window as unknown as { Telegram?: { WebApp?: { initDataUnsafe?: { user?: { id?: number } } } } })
+    .Telegram?.WebApp;
+  return tg?.initDataUnsafe?.user?.id ?? null;
+}
+
 function openBotStart(payload: string) {
   const url = `https://t.me/${BOT_USERNAME}?start=${payload}`;
   const tg = (window as unknown as { Telegram?: { WebApp?: { openTelegramLink?: (u: string) => void } } })
@@ -26,14 +38,33 @@ export default function Admin() {
   const [allowed, setAllowed] = useState(false);
 
   useEffect(() => {
-    api
-      .getMe()
-      .then((me) => {
+    void (async () => {
+      try {
+        const me = await api.getMe();
         if (!me.isAdmin) setError('Доступ только для администратора');
         else setAllowed(true);
-      })
-      .catch(() => setError('Не удалось проверить доступ'))
-      .finally(() => setLoading(false));
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : '';
+        const uid = telegramUserId();
+        if (uid && FALLBACK_ADMIN_IDS.includes(uid)) {
+          setAllowed(true);
+          return;
+        }
+        if (msg === 'NO_INIT_DATA') {
+          setError('Откройте «Админ» из кнопки внизу в чате с ботом (не из браузера).');
+        } else if (msg === 'API error: 401') {
+          setError('Сессия Telegram устарела. Закройте Mini App и снова нажмите «Админ».');
+        } else if (msg === 'API error: 404') {
+          setError('Сервер бота устарел. Админу нужен deploy Worker (npm run deploy).');
+        } else if (msg.includes('VITE_API_URL')) {
+          setError('Mini App не знает адрес API. Проверьте VITE_API_URL в GitHub Variables.');
+        } else {
+          setError(`Не удалось проверить доступ (${msg || 'сеть'})`);
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, []);
 
   if (loading) return <Loading />;

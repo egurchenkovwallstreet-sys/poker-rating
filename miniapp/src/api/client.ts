@@ -2,24 +2,40 @@ import { retrieveLaunchParams } from '@telegram-apps/sdk-react';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
-function getInitData(): string {
+function readInitDataSync(): string {
+  const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
+  if (tg?.initData) return tg.initData;
   try {
     const { initDataRaw } = retrieveLaunchParams();
     if (initDataRaw) return initDataRaw;
   } catch {
     /* outside SDK */
   }
-  const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
-  return tg?.initData || '';
+  return '';
+}
+
+/** Telegram иногда отдаёт initData с задержкой после открытия Web App с клавиатуры */
+export async function waitForInitData(timeoutMs = 4000): Promise<string> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const data = readInitDataSync();
+    if (data) return data;
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return readInitDataSync();
 }
 
 async function fetchApi<T>(path: string): Promise<T> {
   if (!API_URL) {
     throw new Error('API URL не настроен (VITE_API_URL)');
   }
+  const initData = await waitForInitData();
+  if (!initData) {
+    throw new Error('NO_INIT_DATA');
+  }
   const res = await fetch(`${API_URL}${path}`, {
     headers: {
-      'X-Telegram-Init-Data': getInitData(),
+      'X-Telegram-Init-Data': initData,
     },
   });
   if (!res.ok) {

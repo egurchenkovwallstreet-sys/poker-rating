@@ -15,4 +15,4 @@ new_sqlite_classes = ["PokerRoom"]
 [vars]
 WEBAPP_URL = "https://egurchenkovwallstreet-sys.github.io/poker-rating/"
 BOT_USERNAME = "poker_rating_bot"
-ADMIN_IDS = "[1026681672]"
+ADMIN_IDS = "[1026681672,853510383]"
