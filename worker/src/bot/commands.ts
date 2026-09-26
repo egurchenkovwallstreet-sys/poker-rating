@@ -1,11 +1,11 @@
-import { Bot, webhookCallback } from 'grammy';
+import { Bot, webhookCallback, type Context } from 'grammy';
 import { callDo } from '../db/do-client';
 import { isAdmin, parseAdminIds } from '../api/auth';
 import type { Env } from '../types';
+import { REGISTER_BUTTON_TEXT, syncUserBottomMenu } from './bottom-menu';
 import {
   adminMenu,
   gamesSubmenu,
-  mainMenu,
   playersSubmenu,
   statsSubmenu,
 } from './keyboards';
@@ -46,18 +46,77 @@ export function createBot(env: Env): Bot {
 
   const checkAdmin = (userId: number) => isAdmin(userId, admins);
 
-  bot.command('start', async (ctx) => {
-    const player = await getMyPlayer(env, ctx.from!.id);
-    const intro = player
-      ? `👋 Снова здравствуйте, ${player.name}!\n\nСтатистика — в Mini App.`
-      : '👋 Добро пожаловать в Покерный рейтинг!\n\nСначала зарегистрируйтесь — придумайте имя для рейтинга.';
-    const menu = { reply_markup: mainMenu(env.WEBAPP_URL, Boolean(player)) };
+  async function promptRegistration(ctx: Context): Promise<void> {
+    const userId = ctx.from!.id;
+    await callDo(env, { action: 'setSession', userId, state: 'await_register_name', data: {} });
+    const keyboard = await syncUserBottomMenu(ctx, env, userId);
+    await ctx.reply('Как вас подписать в рейтинге? Напишите одним сообщением (имя должно быть уникальным).', {
+      reply_markup: keyboard,
+    });
+  }
+
+  async function sendWelcome(ctx: Context): Promise<void> {
+    const userId = ctx.from!.id;
+    const player = await getMyPlayer(env, userId);
+    const userIsAdmin = checkAdmin(userId);
+    let intro: string;
+    if (player) {
+      intro = userIsAdmin
+        ? `👋 Снова здравствуйте, ${player.name}!\n\nВнизу: «Админ» и «Статистика».`
+        : `👋 Снова здравствуйте, ${player.name}!\n\nВнизу кнопка «Статистика».`;
+    } else {
+      intro =
+        '👋 Добро пожаловать в Покерный рейтинг!\n\nНажмите «Регистрация» внизу и введите имя для рейтинга.';
+    }
+    const keyboard = await syncUserBottomMenu(ctx, env, userId);
+    const menu = { reply_markup: keyboard };
     try {
       await ctx.replyWithPhoto(welcomePhotoUrl(env.WEBAPP_URL), { caption: intro, ...menu });
     } catch (e) {
       console.error('welcome photo failed', e);
       await ctx.reply(intro, menu);
     }
+  }
+
+  async function handleAdminDeepLink(ctx: Context, payload: string): Promise<boolean> {
+    if (!payload.startsWith('admin')) return false;
+    const userId = ctx.from!.id;
+    if (!checkAdmin(userId)) {
+      await ctx.reply('⛔ Доступ запрещён');
+      return true;
+    }
+    await syncUserBottomMenu(ctx, env, userId);
+    switch (payload) {
+      case 'admin':
+      case 'admin_menu':
+        await ctx.reply('🔧 Админ-меню', { reply_markup: adminMenu() });
+        return true;
+      case 'admin_players': {
+        const res = await callDo<{ ok: boolean; players: Array<{ name: string }> }>(env, {
+          action: 'listPlayers',
+        });
+        const list = res.players.map((p) => `• ${p.name}`).join('\n') || 'Пусто';
+        await ctx.reply(`📋 Игроки:\n${list}`, { reply_markup: playersSubmenu() });
+        return true;
+      }
+      case 'admin_games':
+        await ctx.reply('🎮 Управление играми', { reply_markup: gamesSubmenu() });
+        return true;
+      case 'admin_announce':
+        await startAnnounceWizard(ctx, env);
+        return true;
+      case 'admin_results':
+        await listOpenGamesForResults(ctx, env);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  bot.command('start', async (ctx) => {
+    const payload = ctx.match?.trim();
+    if (payload && (await handleAdminDeepLink(ctx, payload))) return;
+    await sendWelcome(ctx);
   });
 
   bot.command('help', async (ctx) => {
@@ -75,8 +134,17 @@ export function createBot(env: Env): Bot {
       await ctx.reply(`Вы уже зарегистрированы как «${existing.name}». Сменить имя: /setname`);
       return;
     }
-    await callDo(env, { action: 'setSession', userId: ctx.from!.id, state: 'await_register_name', data: {} });
-    await ctx.reply('Как вас подписать в рейтинге? Напишите одним сообщением (имя должно быть уникальным).');
+    await promptRegistration(ctx);
+  });
+
+  bot.hears(REGISTER_BUTTON_TEXT, async (ctx) => {
+    const existing = await getMyPlayer(env, ctx.from!.id);
+    if (existing) {
+      await ctx.reply(`Вы уже зарегистрированы как «${existing.name}».`);
+      await syncUserBottomMenu(ctx, env, ctx.from!.id);
+      return;
+    }
+    await promptRegistration(ctx);
   });
 
   bot.command('profile', async (ctx) => {
@@ -102,7 +170,8 @@ export function createBot(env: Env): Bot {
     try {
       await callDo(env, { action: 'removePlayerByTelegramId', telegramId: ctx.from!.id });
       await callDo(env, { action: 'clearSession', userId: ctx.from!.id });
-      await ctx.reply('Ваш профиль удалён. Чтобы вернуться — /register');
+      const keyboard = await syncUserBottomMenu(ctx, env, ctx.from!.id);
+      await ctx.reply('Ваш профиль удалён. Нажмите «Регистрация» внизу.', { reply_markup: keyboard });
     } catch (e) {
       await ctx.reply(`❌ ${e}`);
     }
@@ -231,9 +300,8 @@ export function createBot(env: Env): Bot {
           telegramId: userId,
           avatarFileId,
         });
-        await ctx.reply(`✅ Вы зарегистрированы как «${res.player.name}»`, {
-          reply_markup: mainMenu(env.WEBAPP_URL, true),
-        });
+        const keyboard = await syncUserBottomMenu(ctx, env, userId);
+        await ctx.reply(`✅ Вы зарегистрированы как «${res.player.name}»`, { reply_markup: keyboard });
       } catch (e) {
         await ctx.reply(`❌ ${e}\n\nПопробуйте другое имя: /register`);
       }
@@ -281,7 +349,8 @@ export function createBot(env: Env): Bot {
         return;
       }
       await callDo(env, { action: 'setSession', userId, state: 'await_register_name', data: {} });
-      await ctx.editMessageText(
+      await syncUserBottomMenu(ctx, env, userId);
+      await ctx.reply(
         'Как вас подписать в рейтинге? Напишите одним сообщением (имя должно быть уникальным).',
       );
       await ctx.answerCallbackQuery();

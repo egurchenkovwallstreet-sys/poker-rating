@@ -3,6 +3,7 @@ import TabBar, { type Tab } from './components/TabBar';
 import LastGame from './pages/LastGame';
 import MonthStats from './pages/MonthStats';
 import Overall from './pages/Overall';
+import Admin from './pages/Admin';
 import Player from './pages/Player';
 
 const titles: Record<Tab, string> = {
@@ -19,7 +20,12 @@ function tabFromUrl(): Tab | null {
   return null;
 }
 
+function isAdminView(): boolean {
+  return new URLSearchParams(window.location.search).get('view') === 'admin';
+}
+
 export default function App() {
+  const [adminView] = useState(() => isAdminView());
   const [tab, setTab] = useState<Tab>(() => tabFromUrl() || 'last');
   const [playerId, setPlayerId] = useState<number | null>(null);
 
@@ -43,6 +49,15 @@ export default function App() {
       setPlayerId(null);
     }
   }, []);
+
+  if (adminView) {
+    return (
+      <>
+        <header className="page-header">🔧 Админ</header>
+        <Admin />
+      </>
+    );
+  }
 
   return (
     <>

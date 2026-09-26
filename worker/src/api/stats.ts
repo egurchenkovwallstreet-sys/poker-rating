@@ -1,19 +1,28 @@
 import { Hono } from 'hono';
 import { callDo } from '../db/do-client';
-import { validateInitData } from './auth';
+import { isAdmin, parseAdminIds, validateInitData } from './auth';
 import type { Env } from '../types';
 
 type ApiEnv = { Bindings: Env };
 
 const stats = new Hono<ApiEnv>();
 
-stats.use('*', async (c, next) => {
+function getAuth(c: { req: { header: (n: string) => string | undefined; query: (n: string) => string | undefined }; env: Env }) {
   const initData = c.req.header('X-Telegram-Init-Data') || c.req.query('initData') || '';
-  const auth = validateInitData(initData, c.env.BOT_TOKEN);
-  if (!auth) {
+  return validateInitData(initData, c.env.BOT_TOKEN);
+}
+
+stats.use('*', async (c, next) => {
+  if (!getAuth(c)) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   await next();
+});
+
+stats.get('/me', async (c) => {
+  const auth = getAuth(c)!;
+  const admins = parseAdminIds(c.env.ADMIN_IDS);
+  return c.json({ userId: auth.userId, isAdmin: isAdmin(auth.userId, admins) });
 });
 
 stats.get('/last-game', async (c) => {

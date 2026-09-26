@@ -1,11 +1,4 @@
 import { InlineKeyboard } from 'grammy';
-export function mainMenu(webappUrl: string, registered: boolean) {
-  const kb = new InlineKeyboard().webApp('📊 Открыть статистику', webappUrl);
-  if (!registered) {
-    kb.row().text('✍️ Зарегистрироваться', 'profile:register');
-  }
-  return kb;
-}
 
 export function adminMenu() {
   return new InlineKeyboard()
