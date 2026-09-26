@@ -3,6 +3,7 @@ import { callDo } from '../db/do-client';
 import { isAdmin, parseAdminIds } from '../api/auth';
 import type { Env } from '../types';
 import {
+  ADMIN_BUTTON_TEXT,
   REGISTER_BUTTON_TEXT,
   STATS_BUTTON_TEXT,
   statsInlineKeyboard,
@@ -66,9 +67,9 @@ export function createBot(env: Env): Bot {
     const userIsAdmin = checkAdmin(userId);
     let intro: string;
     if (player) {
-      const statsHint = `📊 Статистика: «Menu» слева от ввода или «${STATS_BUTTON_TEXT}» внизу → «Открыть статистику».`;
+      const statsHint = `📊 «${STATS_BUTTON_TEXT}» внизу → «Открыть статистику» (Mini App).`;
       intro = userIsAdmin
-        ? `👋 Снова здравствуйте, ${player.name}!\n\n${statsHint}\n🔧 Управление клубом: /admin`
+        ? `👋 Снова здравствуйте, ${player.name}!\n\n${statsHint}\n🔧 «${ADMIN_BUTTON_TEXT}» внизу — управление клубом в этом чате.`
         : `👋 Снова здравствуйте, ${player.name}!\n\n${statsHint}`;
     } else {
       intro =
@@ -159,9 +160,17 @@ export function createBot(env: Env): Bot {
       await ctx.reply('Сначала зарегистрируйтесь — кнопка «Регистрация» внизу.');
       return;
     }
-    await ctx.reply('👇 Нажмите, чтобы открыть Mini App:', {
+    await ctx.reply('👇 Статистика в Mini App:', {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
     });
+  });
+
+  bot.hears(ADMIN_BUTTON_TEXT, async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) {
+      await ctx.reply('⛔ Эта кнопка только для администратора.');
+      return;
+    }
+    await ctx.reply('🔧 Админ-меню', { reply_markup: adminMenu() });
   });
 
   bot.command('profile', async (ctx) => {
