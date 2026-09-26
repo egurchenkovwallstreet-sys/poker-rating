@@ -40,7 +40,6 @@ jobs:
         run: npm run build
         env:
           VITE_API_URL: ${{ vars.VITE_API_URL }}
-          VITE_ADMIN_IDS: '1026681672,853510383'
           BASE_PATH: /poker-rating/
 
       - uses: actions/upload-pages-artifact@v3

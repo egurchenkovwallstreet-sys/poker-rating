@@ -118,11 +118,6 @@ export interface PlayerProfile {
   }>;
 }
 
-export interface MeResponse {
-  userId: number;
-  isAdmin: boolean;
-}
-
 export function apiErrorMessage(code: string): string {
   switch (code) {
     case 'NO_INIT_DATA':
@@ -141,7 +136,6 @@ export function apiErrorMessage(code: string): string {
 }
 
 export const api = {
-  getMe: () => fetchApi<MeResponse>('/api/me'),
   getLastGame: () => fetchApi<LastGameData | null>('/api/last-game'),
   getMonthStats: (month: string) =>
     fetchApi<{ month: string; stats: MonthStat[] }>(`/api/month?month=${month}`),

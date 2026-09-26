@@ -3,10 +3,8 @@ import { callDo } from '../db/do-client';
 import { isAdmin, parseAdminIds } from '../api/auth';
 import type { Env } from '../types';
 import {
-  ADMIN_BUTTON_TEXT,
   REGISTER_BUTTON_TEXT,
   STATS_BUTTON_TEXT,
-  adminInlineKeyboard,
   statsInlineKeyboard,
   syncUserBottomMenu,
 } from './bottom-menu';
@@ -68,9 +66,10 @@ export function createBot(env: Env): Bot {
     const userIsAdmin = checkAdmin(userId);
     let intro: string;
     if (player) {
+      const statsHint = `📊 Статистика: «Menu» слева от ввода или «${STATS_BUTTON_TEXT}» внизу → «Открыть статистику».`;
       intro = userIsAdmin
-        ? `👋 Снова здравствуйте, ${player.name}!\n\n📊 Статистика — кнопка «Menu» слева от ввода или «${STATS_BUTTON_TEXT}» внизу → «Открыть» в чате.\n🔧 Админ — «${ADMIN_BUTTON_TEXT}» внизу → «Открыть».`
-        : `👋 Снова здравствуйте, ${player.name}!\n\n📊 «Menu» слева от ввода или «${STATS_BUTTON_TEXT}» внизу → «Открыть статистику».`;
+        ? `👋 Снова здравствуйте, ${player.name}!\n\n${statsHint}\n🔧 Управление клубом: /admin`
+        : `👋 Снова здравствуйте, ${player.name}!\n\n${statsHint}`;
     } else {
       intro =
         '👋 Добро пожаловать в Покерный рейтинг!\n\nНажмите «Регистрация» внизу и введите имя для рейтинга.';
@@ -162,16 +161,6 @@ export function createBot(env: Env): Bot {
     }
     await ctx.reply('👇 Нажмите, чтобы открыть Mini App:', {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
-    });
-  });
-
-  bot.hears(ADMIN_BUTTON_TEXT, async (ctx) => {
-    if (!checkAdmin(ctx.from!.id)) {
-      await ctx.reply('⛔ Эта кнопка только для администратора.');
-      return;
-    }
-    await ctx.reply('👇 Админ-панель в Mini App:', {
-      reply_markup: adminInlineKeyboard(env.WEBAPP_URL),
     });
   });
 

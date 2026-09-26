@@ -1,17 +1,14 @@
 import type { Context } from 'grammy';
 import { InlineKeyboard, Keyboard } from 'grammy';
-import { isAdmin, parseAdminIds } from '../api/auth';
 import { callDo } from '../db/do-client';
 import type { Env } from '../types';
 
-/** Текст кнопки регистрации на нижней клавиатуре */
 export const REGISTER_BUTTON_TEXT = '✍️ Регистрация';
 export const STATS_BUTTON_TEXT = '📊 Статистика';
-export const ADMIN_BUTTON_TEXT = '🔧 Админ';
 
-export function webappUrls(webappUrl: string): { stats: string; admin: string } {
+export function webappUrls(webappUrl: string): { stats: string } {
   const base = webappUrl.endsWith('/') ? webappUrl : `${webappUrl}/`;
-  return { stats: base, admin: `${base}?view=admin` };
+  return { stats: base };
 }
 
 export function statsInlineKeyboard(webappUrl: string): InlineKeyboard {
@@ -19,25 +16,10 @@ export function statsInlineKeyboard(webappUrl: string): InlineKeyboard {
   return new InlineKeyboard().webApp('📊 Открыть статистику', stats);
 }
 
-export function adminInlineKeyboard(webappUrl: string): InlineKeyboard {
-  const { admin } = webappUrls(webappUrl);
-  return new InlineKeyboard().webApp('🔧 Открыть админ-панель', admin);
-}
-
-/**
- * Нижняя клавиатура — обычный текст (не web_app: у reply-кнопок часто нет initData).
- * Mini App открывается через Menu Button или inline-кнопку в сообщении.
- */
-export function buildBottomKeyboard(registered: boolean, userIsAdmin: boolean): Keyboard {
+/** Нижняя клавиатура: текст → inline Web App (надёжный initData). */
+export function buildBottomKeyboard(registered: boolean): Keyboard {
   if (!registered) {
     return new Keyboard().text(REGISTER_BUTTON_TEXT).resized().persistent();
-  }
-  if (userIsAdmin) {
-    return new Keyboard()
-      .text(ADMIN_BUTTON_TEXT)
-      .text(STATS_BUTTON_TEXT)
-      .resized()
-      .persistent();
   }
   return new Keyboard().text(STATS_BUTTON_TEXT).resized().persistent();
 }
@@ -45,21 +27,19 @@ export function buildBottomKeyboard(registered: boolean, userIsAdmin: boolean): 
 export async function buildBottomKeyboardForUser(
   env: Env,
   telegramId: number,
-): Promise<{ keyboard: Keyboard; registered: boolean; isAdmin: boolean }> {
+): Promise<{ keyboard: Keyboard; registered: boolean }> {
   const playerRes = await callDo<{ ok: boolean; player: unknown | null }>(env, {
     action: 'getPlayerByTelegramId',
     telegramId,
   });
   const registered = Boolean(playerRes.player);
-  const userIsAdmin = isAdmin(telegramId, parseAdminIds(env.ADMIN_IDS));
   return {
-    keyboard: buildBottomKeyboard(registered, userIsAdmin),
+    keyboard: buildBottomKeyboard(registered),
     registered,
-    isAdmin: userIsAdmin,
   };
 }
 
-/** Menu Button (слева от поля ввода) + reply-клавиатура */
+/** Menu Button (слева от ввода) + reply-клавиатура */
 export async function syncUserBottomMenu(ctx: Context, env: Env, telegramId: number): Promise<Keyboard> {
   const { keyboard, registered } = await buildBottomKeyboardForUser(env, telegramId);
   const chatId = ctx.chat?.id;
