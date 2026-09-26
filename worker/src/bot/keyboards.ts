@@ -1,6 +1,4 @@
 import { InlineKeyboard } from 'grammy';
-import type { Player } from '../types';
-
 export function mainMenu(webappUrl: string, registered: boolean) {
   const kb = new InlineKeyboard().webApp('📊 Открыть статистику', webappUrl);
   if (!registered) {
@@ -25,9 +23,29 @@ export function playersSubmenu() {
     .text('◀️ Назад', 'admin:back');
 }
 
+export function gameRsvpKeyboard(gameId: number) {
+  return new InlineKeyboard()
+    .text('✅ Участвую', `game:rsvp:${gameId}:yes`)
+    .text('❌ Нет', `game:rsvp:${gameId}:no`);
+}
+
+export function announceGamesKeyboard(games: Array<{ id: number; date: number }>) {
+  const kb = new InlineKeyboard();
+  for (const g of games) {
+    const date = new Date(g.date).toLocaleDateString('ru-RU');
+    kb.text(`▶️ #${g.id} (${date})`, `game:start:${g.id}`).row();
+  }
+  kb.text('◀️ Назад', 'admin:games');
+  return kb;
+}
+
 export function gamesSubmenu() {
   return new InlineKeyboard()
-    .text('➕ Новая игра', 'admin:new_game')
+    .text('📢 Анонс игры', 'admin:announce_game')
+    .row()
+    .text('▶️ Старт игры', 'admin:start_game')
+    .row()
+    .text('📝 Ввод результатов', 'admin:new_game')
     .row()
     .text('✏️ Редактировать игру', 'admin:edit_game')
     .row()
@@ -47,23 +65,6 @@ export function statsSubmenu(webappUrl: string) {
     .text('◀️ Назад', 'admin:back');
 }
 
-export function playerSelectionKeyboard(
-  players: Player[],
-  selected: Set<number>,
-  sessionKey: string,
-) {
-  const kb = new InlineKeyboard();
-  for (const p of players) {
-    const mark = selected.has(p.id) ? '✅' : '⬜';
-    kb.text(`${mark} ${p.name}`, `newgame:toggle:${sessionKey}:${p.id}`).row();
-  }
-  if (selected.size > 0) {
-    kb.text('✔️ Готово', `newgame:done:${sessionKey}`).row();
-  }
-  kb.text('❌ Отмена', 'newgame:cancel');
-  return kb;
-}
-
 export function gameSummaryKeyboard(gameId: number) {
   return new InlineKeyboard()
     .text('✅ Завершить игру', `game:finish:${gameId}`)
@@ -71,6 +72,16 @@ export function gameSummaryKeyboard(gameId: number) {
     .text('✏️ Изменить данные', `game:edit:${gameId}`)
     .row()
     .text('🗑 Удалить игру', `game:delete:${gameId}`);
+}
+
+export function openGamesKeyboard(games: Array<{ id: number; date: number }>, action: string) {
+  const kb = new InlineKeyboard();
+  for (const g of games) {
+    const date = new Date(g.date).toLocaleDateString('ru-RU');
+    kb.text(`#${g.id} (${date})`, `${action}:${g.id}`).row();
+  }
+  kb.text('◀️ Назад', 'admin:games');
+  return kb;
 }
 
 export function draftGamesKeyboard(games: Array<{ id: number; created_at: number }>, action: string) {

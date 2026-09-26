@@ -1,4 +1,5 @@
 import { SCHEMA_SQL } from '../db/schema';
+import * as announce from '../db/game-announce';
 import * as db from '../db/queries';
 import type { DoAction, Env } from '../types';
 
@@ -119,6 +120,55 @@ export class PokerRoom implements DurableObject {
         case 'seedDemo': {
           const result = db.seedDemo(this.sql, body.createdBy);
           return json({ ok: true, ...result });
+        }
+        case 'createAnnouncedGame': {
+          try {
+            const gameId = announce.createAnnouncedGame(
+              this.sql,
+              body.scheduledDate,
+              body.ticketPrice,
+              body.maxPlayers,
+              body.createdBy,
+            );
+            const game = announce.getGameById(this.sql, gameId);
+            return json({ ok: true, gameId, game });
+          } catch (e) {
+            return json({ ok: false, error: String(e instanceof Error ? e.message : e) }, 400);
+          }
+        }
+        case 'listRegisteredPlayers':
+          return json({ ok: true, players: announce.listRegisteredPlayers(this.sql) });
+        case 'setGameRsvp': {
+          const result = announce.setGameRsvp(this.sql, body.gameId, body.playerId, body.response);
+          if (!result.ok) return json({ ok: false, error: result.error }, 400);
+          return json(result);
+        }
+        case 'startAnnouncedGame': {
+          const result = announce.startAnnouncedGame(this.sql, body.gameId);
+          return json(result, result.ok ? 200 : 400);
+        }
+        case 'listAnnouncedGames':
+          return json({ ok: true, games: announce.listAnnouncedGames(this.sql) });
+        case 'getRsvpSummary': {
+          const summary = announce.getRsvpSummary(this.sql, body.gameId);
+          return json({ ok: true, ...summary });
+        }
+        case 'getGameById': {
+          const game = announce.getGameById(this.sql, body.gameId);
+          return json(game ? { ok: true, game } : { ok: false, error: 'Игра не найдена' }, game ? 200 : 404);
+        }
+        case 'listRsvpYesPlayers':
+          return json({ ok: true, players: announce.listRsvpYesPlayers(this.sql, body.gameId) });
+        case 'saveInviteMessage':
+          announce.saveInviteMessage(this.sql, body.gameId, body.telegramId, body.messageId);
+          return json({ ok: true });
+        case 'listInviteMessages':
+          return json({ ok: true, messages: announce.listInviteMessages(this.sql, body.gameId) });
+        case 'listOpenGames':
+          return json({ ok: true, games: announce.listOpenGames(this.sql) });
+        case 'prepareOpenGameResults': {
+          const result = announce.prepareOpenGameForResults(this.sql, body.gameId);
+          return json(result, result.ok ? 200 : 400);
         }
         default:
           return json({ ok: false, error: 'Unknown action' }, 400);

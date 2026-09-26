@@ -4,109 +4,17 @@ import type { Env, GameWithResults, Player } from '../types';
 import {
   draftGamesKeyboard,
   gameSummaryKeyboard,
-  playerSelectionKeyboard,
+  openGamesKeyboard,
 } from './keyboards';
 
 interface SessionData {
-  selectedPlayers?: number[];
   gameId?: number;
   playerIds?: number[];
   currentIndex?: number;
   step?: 'buyin' | 'payout';
   buyins?: Record<number, number>;
   payouts?: Record<number, number>;
-  sessionKey?: string;
   editGameId?: number;
-}
-
-export async function startNewGame(ctx: Context, env: Env): Promise<void> {
-  const userId = ctx.from!.id;
-  const result = await callDo<{ ok: boolean; players: Player[] }>(env, { action: 'listPlayers' });
-  if (result.players.length === 0) {
-    await ctx.reply('Сначала добавьте игроков командой /addplayer');
-    return;
-  }
-
-  const sessionKey = String(Date.now());
-  await callDo(env, {
-    action: 'setSession',
-    userId,
-    state: 'new_game_select',
-    data: { selectedPlayers: [], sessionKey },
-  });
-
-  await ctx.reply('Выберите участников игры:', {
-    reply_markup: playerSelectionKeyboard(result.players, new Set(), sessionKey),
-  });
-}
-
-export async function togglePlayer(
-  ctx: Context,
-  env: Env,
-  sessionKey: string,
-  playerId: number,
-): Promise<void> {
-  const userId = ctx.from!.id;
-  const sessionRes = await callDo<{ ok: boolean; session: { state: string; data: SessionData } | null }>(
-    env,
-    { action: 'getSession', userId },
-  );
-  const data = sessionRes.session?.data || {};
-  const selected = new Set(data.selectedPlayers || []);
-  if (selected.has(playerId)) selected.delete(playerId);
-  else selected.add(playerId);
-
-  await callDo(env, {
-    action: 'setSession',
-    userId,
-    state: 'new_game_select',
-    data: { ...data, selectedPlayers: [...selected], sessionKey },
-  });
-
-  const playersRes = await callDo<{ ok: boolean; players: Player[] }>(env, { action: 'listPlayers' });
-  await ctx.editMessageReplyMarkup({
-    reply_markup: playerSelectionKeyboard(playersRes.players, selected, sessionKey),
-  });
-}
-
-export async function finishPlayerSelection(ctx: Context, env: Env): Promise<void> {
-  const userId = ctx.from!.id;
-  const sessionRes = await callDo<{ ok: boolean; session: { data: SessionData } | null }>(env, {
-    action: 'getSession',
-    userId,
-  });
-  const data = sessionRes.session?.data || {};
-  const playerIds = data.selectedPlayers || [];
-
-  if (playerIds.length < 2) {
-    await ctx.answerCallbackQuery({ text: 'Выберите минимум 2 игроков', show_alert: true });
-    return;
-  }
-
-  const createRes = await callDo<{ ok: boolean; gameId: number }>(env, {
-    action: 'createGame',
-    playerIds,
-    createdBy: userId,
-  });
-
-  await callDo(env, {
-    action: 'setSession',
-    userId,
-    state: 'new_game_buyin',
-    data: {
-      gameId: createRes.gameId,
-      playerIds,
-      currentIndex: 0,
-      step: 'buyin',
-      buyins: {},
-      payouts: {},
-    },
-  });
-
-  const playersRes = await callDo<{ ok: boolean; players: Player[] }>(env, { action: 'listPlayers' });
-  const player = playersRes.players.find((p) => p.id === playerIds[0])!;
-  await ctx.editMessageText(`Игра #${createRes.gameId} создана.\n\nБай-ин для ${player.name}:`);
-  await ctx.answerCallbackQuery();
 }
 
 export async function handleGameInput(ctx: Context, env: Env, text: string): Promise<boolean> {
@@ -215,6 +123,68 @@ export async function finishGameAction(ctx: Context, env: Env, gameId: number): 
 export async function deleteGameAction(ctx: Context, env: Env, gameId: number): Promise<void> {
   await callDo(env, { action: 'deleteGame', gameId });
   await ctx.editMessageText(`🗑 Игра #${gameId} удалена.`);
+}
+
+export async function listOpenGamesForResults(ctx: Context, env: Env): Promise<void> {
+  const res = await callDo<{ ok: boolean; games: Array<{ id: number; date: number }> }>(env, {
+    action: 'listOpenGames',
+  });
+  if (res.games.length === 0) {
+    await ctx.reply('Нет игр в статусе «идёт» (open).\n\nСначала: анонс → RSVP → «Старт игры».');
+    return;
+  }
+  await ctx.reply('Выберите игру для ввода результатов:', {
+    reply_markup: openGamesKeyboard(res.games, 'game:results'),
+  });
+}
+
+export async function startOpenGameResultsEntry(
+  ctx: Context,
+  env: Env,
+  gameId: number,
+): Promise<void> {
+  const userId = ctx.from!.id;
+  const prep = await callDo<{
+    ok: boolean;
+    error?: string;
+    playerIds?: number[];
+    ticketPrice?: number;
+  }>(env, { action: 'prepareOpenGameResults', gameId });
+
+  if (!prep.ok || !prep.playerIds) {
+    await ctx.answerCallbackQuery({ text: prep.error || 'Ошибка', show_alert: true });
+    return;
+  }
+
+  const playerIds = prep.playerIds;
+  await callDo(env, {
+    action: 'setSession',
+    userId,
+    state: 'new_game_buyin',
+    data: {
+      gameId,
+      playerIds,
+      currentIndex: 0,
+      step: 'buyin',
+      buyins: {},
+      payouts: {},
+      fromOpenGame: true,
+    },
+  });
+
+  const playersRes = await callDo<{ ok: boolean; players: Player[] }>(env, { action: 'listPlayers' });
+  const player = playersRes.players.find((p) => p.id === playerIds[0])!;
+  const ticketHint =
+    prep.ticketPrice && prep.ticketPrice > 0
+      ? `\n(Билет по анонсу: ${prep.ticketPrice})`
+      : '';
+
+  const text = `Игра #${gameId} — участники из записи на игру.${ticketHint}\n\nБай-ин для ${player.name}:`;
+  if (ctx.callbackQuery?.message) {
+    await ctx.editMessageText(text);
+  } else {
+    await ctx.reply(text);
+  }
 }
 
 export async function listDraftGamesForAction(

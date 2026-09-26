@@ -1,4 +1,5 @@
 import type { SqlStorage } from '@cloudflare/workers-types';
+import { firstRow } from './query-helpers';
 import type {
   Game,
   GameResult,
@@ -32,6 +33,78 @@ function migrateSchema(sql: SqlStorage): void {
   } catch (e) {
     console.error('migrate idx_players_telegram_id:', e);
   }
+  migrateGamesTable(sql);
+  try {
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS game_rsvps (
+        game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        player_id INTEGER NOT NULL REFERENCES players(id),
+        response TEXT NOT NULL CHECK(response IN ('yes', 'no')),
+        queue_order INTEGER,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (game_id, player_id)
+      )
+    `);
+    sql.exec('CREATE INDEX IF NOT EXISTS idx_game_rsvps_game ON game_rsvps(game_id)');
+  } catch (e) {
+    console.error('migrate game_rsvps:', e);
+  }
+  try {
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS game_invite_messages (
+        game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        telegram_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL,
+        PRIMARY KEY (game_id, telegram_id)
+      )
+    `);
+  } catch (e) {
+    console.error('migrate game_invite_messages:', e);
+  }
+}
+
+function migrateGamesTable(sql: SqlStorage): void {
+  try {
+    const cols = [...sql.exec('PRAGMA table_info(games)').toArray()] as Array<{ name: string }>;
+    const names = cols.map((c) => c.name);
+    if (!names.includes('ticket_price')) {
+      sql.exec('ALTER TABLE games ADD COLUMN ticket_price INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!names.includes('max_players')) {
+      sql.exec('ALTER TABLE games ADD COLUMN max_players INTEGER NOT NULL DEFAULT 0');
+    }
+    const master = firstRow<{ sql: string }>(
+      sql,
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='games'",
+    );
+    if (master?.sql && !master.sql.includes("'announced'")) {
+      sql.exec('PRAGMA foreign_keys = OFF');
+      sql.exec(`
+        CREATE TABLE games_migrated (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          created_by INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          ticket_price INTEGER NOT NULL DEFAULT 0,
+          max_players INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      sql.exec(`
+        INSERT INTO games_migrated (id, date, status, created_by, created_at, ticket_price, max_players)
+        SELECT id, date, status, created_by, created_at,
+          COALESCE(ticket_price, 0), COALESCE(max_players, 0)
+        FROM games
+      `);
+      sql.exec('DROP TABLE games');
+      sql.exec('ALTER TABLE games_migrated RENAME TO games');
+      sql.exec('CREATE INDEX IF NOT EXISTS idx_games_status ON games(status)');
+      sql.exec('CREATE INDEX IF NOT EXISTS idx_games_date ON games(date)');
+      sql.exec('PRAGMA foreign_keys = ON');
+    }
+  } catch (e) {
+    console.error('migrate games:', e);
+  }
 }
 
 export function addPlayer(sql: SqlStorage, name: string, telegramId?: number): Player {
@@ -53,11 +126,6 @@ export function removePlayer(sql: SqlStorage, name: string): boolean {
 
 export function listPlayers(sql: SqlStorage): Player[] {
   return [...sql.exec('SELECT * FROM players ORDER BY name COLLATE NOCASE').toArray()] as unknown as Player[];
-}
-
-function firstRow<T>(sql: SqlStorage, query: string, ...params: unknown[]): T | null {
-  const rows = [...sql.exec(query, ...params).toArray()];
-  return rows.length ? (rows[0] as T) : null;
 }
 
 export function getPlayerById(sql: SqlStorage, id: number): Player | null {
@@ -120,9 +188,9 @@ export function setPlayerAvatar(sql: SqlStorage, telegramId: number, avatarFileI
 export function createGame(sql: SqlStorage, playerIds: number[], createdBy: number): number {
   const now = Date.now();
   sql.exec(
-    'INSERT INTO games (date, status, created_by, created_at) VALUES (?, ?, ?, ?)',
+    `INSERT INTO games (date, status, created_by, created_at, ticket_price, max_players)
+     VALUES (?, 'draft', ?, ?, 0, 0)`,
     now,
-    'draft',
     createdBy,
     now,
   );

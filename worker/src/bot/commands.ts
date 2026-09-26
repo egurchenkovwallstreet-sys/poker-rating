@@ -12,14 +12,20 @@ import {
 import {
   deleteGameAction,
   finishGameAction,
-  finishPlayerSelection,
   handleGameInput,
   listDraftGamesForAction,
+  listOpenGamesForResults,
   showGameSummary,
-  startNewGame,
-  togglePlayer,
+  startOpenGameResultsEntry,
 } from './admin';
 import { telegramProfileAvatarFileId } from './avatar';
+import {
+  handleAnnounceInput,
+  handleGameRsvp,
+  listAnnouncedForStart,
+  startAnnounceWizard,
+  startGameAction,
+} from './announce';
 
 async function getMyPlayer(env: Env, telegramId: number) {
   const res = await callDo<{ ok: boolean; player: { id: number; name: string } | null }>(env, {
@@ -27,6 +33,11 @@ async function getMyPlayer(env: Env, telegramId: number) {
     telegramId,
   });
   return res.player;
+}
+
+function welcomePhotoUrl(webappUrl: string): string {
+  const base = webappUrl.endsWith('/') ? webappUrl : `${webappUrl}/`;
+  return `${base}welcome.jpg`;
 }
 
 export function createBot(env: Env): Bot {
@@ -40,12 +51,18 @@ export function createBot(env: Env): Bot {
     const intro = player
       ? `👋 Снова здравствуйте, ${player.name}!\n\nСтатистика — в Mini App.`
       : '👋 Добро пожаловать в Покерный рейтинг!\n\nСначала зарегистрируйтесь — придумайте имя для рейтинга.';
-    await ctx.reply(intro, { reply_markup: mainMenu(env.WEBAPP_URL, Boolean(player)) });
+    const menu = { reply_markup: mainMenu(env.WEBAPP_URL, Boolean(player)) };
+    try {
+      await ctx.replyWithPhoto(welcomePhotoUrl(env.WEBAPP_URL), { caption: intro, ...menu });
+    } catch (e) {
+      console.error('welcome photo failed', e);
+      await ctx.reply(intro, menu);
+    }
   });
 
   bot.command('help', async (ctx) => {
     const adminHelp = checkAdmin(ctx.from!.id)
-      ? '\n\nАдмин:\n/admin — меню игр\n/newgame, /finishgame, /deletegame'
+      ? '\n\nАдмин:\n/admin — меню\n/announce — анонс игры\n/results — ввод результатов'
       : '';
     await ctx.reply(
       `📖 Справка\n\n/start — главное меню\n/register — регистрация\n/profile — мой профиль\n/setname — сменить имя\n/avatar — обновить фото из Telegram\n/leave — удалить свой профиль\n\nСтатистика — Mini App.${adminHelp}`,
@@ -146,9 +163,14 @@ export function createBot(env: Env): Bot {
     await ctx.reply(`📋 Игроки:\n${list}`);
   });
 
-  bot.command('newgame', async (ctx) => {
+  bot.command('announce', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
-    await startNewGame(ctx, env);
+    await startAnnounceWizard(ctx, env);
+  });
+
+  bot.command('results', async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
+    await listOpenGamesForResults(ctx, env);
   });
 
   bot.command('finishgame', async (ctx) => {
@@ -234,9 +256,11 @@ export function createBot(env: Env): Bot {
       return;
     }
 
-    if (!checkAdmin(userId)) return;
-
-    await handleGameInput(ctx, env, ctx.message.text);
+    if (checkAdmin(userId)) {
+      const handled = await handleAnnounceInput(ctx, env, ctx.message.text);
+      if (handled) return;
+      await handleGameInput(ctx, env, ctx.message.text);
+    }
   });
 
   bot.on('callback_query:data', async (ctx) => {
@@ -296,9 +320,43 @@ export function createBot(env: Env): Bot {
       return;
     }
 
+    if (data === 'admin:announce_game') {
+      if (!checkAdmin(userId)) return;
+      await startAnnounceWizard(ctx, env);
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    if (data === 'admin:start_game') {
+      if (!checkAdmin(userId)) return;
+      await listAnnouncedForStart(ctx, env);
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    if (data.startsWith('game:rsvp:')) {
+      const [, , gameIdStr, answer] = data.split(':');
+      await handleGameRsvp(ctx, env, parseInt(gameIdStr, 10), answer === 'yes' ? 'yes' : 'no');
+      return;
+    }
+
+    if (data.startsWith('game:start:')) {
+      if (!checkAdmin(userId)) return;
+      await startGameAction(ctx, env, parseInt(data.split(':')[2], 10));
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
     if (data === 'admin:new_game') {
       if (!checkAdmin(userId)) return;
-      await startNewGame(ctx, env);
+      await listOpenGamesForResults(ctx, env);
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    if (data.startsWith('game:results:')) {
+      if (!checkAdmin(userId)) return;
+      await startOpenGameResultsEntry(ctx, env, parseInt(data.split(':')[2], 10));
       await ctx.answerCallbackQuery();
       return;
     }
@@ -320,28 +378,6 @@ export function createBot(env: Env): Bot {
     if (data === 'admin:delete_game') {
       if (!checkAdmin(userId)) return;
       await listDraftGamesForAction(ctx, env, 'game:delete', 'Выберите игру для удаления:');
-      await ctx.answerCallbackQuery();
-      return;
-    }
-
-    if (data.startsWith('newgame:toggle:')) {
-      if (!checkAdmin(userId)) return;
-      const [, , sessionKey, playerIdStr] = data.split(':');
-      await togglePlayer(ctx, env, sessionKey, parseInt(playerIdStr, 10));
-      await ctx.answerCallbackQuery();
-      return;
-    }
-
-    if (data.startsWith('newgame:done:')) {
-      if (!checkAdmin(userId)) return;
-      await finishPlayerSelection(ctx, env);
-      return;
-    }
-
-    if (data === 'newgame:cancel') {
-      if (!checkAdmin(userId)) return;
-      await callDo(env, { action: 'clearSession', userId });
-      await ctx.editMessageText('❌ Создание игры отменено');
       await ctx.answerCallbackQuery();
       return;
     }

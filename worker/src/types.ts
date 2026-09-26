@@ -17,9 +17,11 @@ export interface Player {
 export interface Game {
   id: number;
   date: number;
-  status: 'draft' | 'finished';
+  status: 'draft' | 'finished' | 'announced' | 'registration_full' | 'open';
   created_by: number;
   created_at: number;
+  ticket_price: number;
+  max_players: number;
 }
 
 export interface GameResult {
@@ -99,4 +101,16 @@ export type DoAction =
   | { action: 'getSession'; userId: number }
   | { action: 'setSession'; userId: number; state: string; data: Record<string, unknown> }
   | { action: 'clearSession'; userId: number }
-  | { action: 'seedDemo'; createdBy: number };
+  | { action: 'seedDemo'; createdBy: number }
+  | { action: 'createAnnouncedGame'; scheduledDate: number; ticketPrice: number; maxPlayers: number; createdBy: number }
+  | { action: 'listRegisteredPlayers' }
+  | { action: 'setGameRsvp'; gameId: number; playerId: number; response: 'yes' | 'no' }
+  | { action: 'startAnnouncedGame'; gameId: number }
+  | { action: 'listAnnouncedGames' }
+  | { action: 'getRsvpSummary'; gameId: number }
+  | { action: 'getGameById'; gameId: number }
+  | { action: 'listRsvpYesPlayers'; gameId: number }
+  | { action: 'saveInviteMessage'; gameId: number; telegramId: number; messageId: number }
+  | { action: 'listInviteMessages'; gameId: number }
+  | { action: 'listOpenGames' }
+  | { action: 'prepareOpenGameResults'; gameId: number };
