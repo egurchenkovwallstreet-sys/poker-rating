@@ -204,20 +204,31 @@ export function createBot(env: Env): Bot {
     await ctx.reply('🔧 Админ-меню', { reply_markup: adminMenu() });
   });
 
-  bot.command('seeddemo', async (ctx) => {
-    if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
+  async function runSeedDemo(ctx: Context): Promise<void> {
+    if (!checkAdmin(ctx.from!.id)) {
+      await ctx.reply('⛔ Доступ запрещён');
+      return;
+    }
     try {
-      const res = await callDo<{ ok: boolean; players: number; games: number }>(env, {
+      const res = await callDo<{
+        ok: boolean;
+        players: number;
+        games: number;
+        playerNames: string[];
+      }>(env, {
         action: 'seedDemo',
         createdBy: ctx.from!.id,
       });
+      const list = res.playerNames.map((n) => `• ${n}`).join('\n');
       await ctx.reply(
-        `✅ Демо-данные созданы:\n• игроков: ${res.players}\n• игр: ${res.games}\n\nОткройте Mini App.`,
+        `✅ Тестовые данные добавлены\n\nИгроки (без Telegram, только рейтинг):\n${list}\n\nЗавершённых игр: ${res.games}\n\nОткройте «Статистика» внизу или Mini App.`,
       );
     } catch (e) {
       await ctx.reply(`❌ ${e}`);
     }
-  });
+  }
+
+  bot.command('seeddemo', runSeedDemo);
 
   bot.command('players', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
@@ -385,6 +396,13 @@ export function createBot(env: Env): Bot {
       });
       const list = res.players.map((p) => `• ${p.name}`).join('\n') || 'Пусто';
       await ctx.editMessageText(`📋 Игроки:\n${list}`, { reply_markup: playersSubmenu() });
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    if (data === 'admin:seeddemo') {
+      if (!checkAdmin(userId)) return;
+      await runSeedDemo(ctx);
       await ctx.answerCallbackQuery();
       return;
     }

@@ -530,9 +530,13 @@ export function clearSession(sql: SqlStorage, userId: number): void {
   sql.exec('DELETE FROM bot_sessions WHERE user_id = ?', userId);
 }
 
-/** Тестовые игроки и игры для проверки Mini App (сумма profit = 0). */
-export function seedDemo(sql: SqlStorage, createdBy: number): { players: number; games: number } {
-  const names = ['Иван', 'Мария', 'Олег', 'Петр', 'Саша'];
+/** Тестовые игроки (без telegram_id) и завершённые игры с результатами (Σ profit = 0). */
+export function seedDemo(sql: SqlStorage, createdBy: number): {
+  players: number;
+  games: number;
+  playerNames: string[];
+} {
+  const names = ['Демо Иван', 'Демо Мария', 'Демо Олег', 'Демо Петр', 'Демо Саша', 'Демо Катя'];
   const playerIds: number[] = [];
   for (const name of names) {
     let row = firstRow<{ id: number }>(sql, 'SELECT id FROM players WHERE name = ? COLLATE NOCASE', name);
@@ -543,39 +547,59 @@ export function seedDemo(sql: SqlStorage, createdBy: number): { players: number;
     playerIds.push(row.id);
   }
 
+  /** [индекс игрока, бай-ин, стек] */
   const gameSets: Array<Array<[number, number, number]>> = [
     [
-      [0, 1000, 2500],
+      [0, 1000, 2800],
       [1, 1000, 0],
-      [2, 1000, 500],
+      [2, 1000, 400],
       [3, 1000, 0],
-      [4, 1000, 2000],
+      [4, 1000, 1800],
+      [5, 1000, 1000],
     ],
     [
       [0, 2000, 0],
-      [1, 2000, 4000],
-      [2, 2000, 1000],
-      [3, 2000, 2000],
-      [4, 2000, 3000],
+      [1, 2000, 4500],
+      [2, 2000, 500],
+      [3, 2000, 1500],
+      [4, 2000, 3500],
+      [5, 2000, 2000],
     ],
     [
-      [0, 1500, 3000],
-      [1, 1500, 1500],
+      [0, 1500, 3200],
+      [1, 1500, 800],
       [2, 1500, 0],
-      [3, 1500, 1500],
-      [4, 1500, 1500],
+      [3, 1500, 2200],
+      [4, 1500, 0],
+      [5, 1500, 2800],
+    ],
+    [
+      [0, 1000, 1500],
+      [1, 1000, 500],
+      [2, 1000, 0],
+      [3, 1000, 1000],
+      [4, 1000, 2000],
+      [5, 1000, 1000],
     ],
   ];
 
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
   let gamesCreated = 0;
-  for (const set of gameSets) {
-    const gameId = createGame(sql, playerIds, createdBy);
+  for (let g = 0; g < gameSets.length; g++) {
+    const set = gameSets[g];
+    const subsetIds = playerIds.slice(0, Math.min(6, playerIds.length));
+    const gameId = createGame(sql, subsetIds, createdBy);
     for (const [idx, buyin, payout] of set) {
-      addOrUpdateResult(sql, gameId, playerIds[idx], buyin, payout);
+      if (idx >= subsetIds.length) continue;
+      addOrUpdateResult(sql, gameId, subsetIds[idx], buyin, payout);
     }
     const fin = finishGame(sql, gameId);
-    if (fin.ok) gamesCreated++;
+    if (fin.ok) {
+      gamesCreated++;
+      const gameDate = Date.now() - (gameSets.length - g) * weekMs;
+      sql.exec('UPDATE games SET date = ? WHERE id = ?', gameDate, gameId);
+    }
   }
 
-  return { players: playerIds.length, games: gamesCreated };
+  return { players: playerIds.length, games: gamesCreated, playerNames: names };
 }

@@ -34,6 +34,8 @@ export function announceGamesKeyboard(games: Array<{ id: number; date: number }>
 
 export function gamesSubmenu() {
   return new InlineKeyboard()
+    .text('🧪 Тестовые данные', 'admin:seeddemo')
+    .row()
     .text('📢 Анонс игры', 'admin:announce_game')
     .row()
     .text('▶️ Старт игры', 'admin:start_game')
