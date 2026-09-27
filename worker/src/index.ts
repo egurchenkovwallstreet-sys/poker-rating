@@ -14,8 +14,15 @@ app.use(
     origin: '*',
     allowMethods: ['GET', 'HEAD', 'POST', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'X-Telegram-Init-Data'],
+    exposeHeaders: ['Content-Type'],
+    maxAge: 86400,
   }),
 );
+
+app.onError((err, c) => {
+  console.error('app error:', err);
+  return c.json({ error: 'internal' }, 503);
+});
 
 app.route('/api', stats);
 

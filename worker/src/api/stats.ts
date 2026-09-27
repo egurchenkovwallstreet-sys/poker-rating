@@ -44,6 +44,44 @@ stats.use('*', async (c, next) => {
   c.header('Cache-Control', 'no-store');
 });
 
+async function bootstrapHandler(c: Context<ApiEnv>) {
+  const auth = c.get('auth');
+  const admins = parseAdminIds(c.env.ADMIN_IDS);
+  const month = c.req.query('month') || currentMonth();
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return c.json({ error: 'Invalid month' }, 400);
+  }
+  let bundleRes: {
+    ok: boolean;
+    bundle: {
+      summary: {
+        finishedGames: number;
+        playersInRating: number;
+        lastGamePlayers: number;
+      };
+      lastGame: unknown;
+      overall: unknown;
+      monthStats: unknown;
+    };
+  };
+  try {
+    bundleRes = await callDo(c.env, { action: 'getStatsBundle', month });
+  } catch (e) {
+    console.error('getStatsBundle:', e);
+    return c.json({ error: 'Service unavailable' }, 503);
+  }
+  const b = bundleRes.bundle;
+  return c.json({
+    userId: auth.userId,
+    isAdmin: isAdmin(auth.userId, admins),
+    club: b.summary,
+    month,
+    lastGame: b.lastGame,
+    overall: Array.isArray(b.overall) ? b.overall : [],
+    monthStats: Array.isArray(b.monthStats) ? b.monthStats : [],
+  });
+}
+
 async function meHandler(c: Context<ApiEnv>) {
   const auth = c.get('auth');
   const admins = parseAdminIds(c.env.ADMIN_IDS);
@@ -95,6 +133,7 @@ async function playerHandler(c: Context<ApiEnv>) {
 }
 
 for (const method of ['get', 'post'] as const) {
+  stats[method]('/bootstrap', bootstrapHandler);
   stats[method]('/me', meHandler);
   stats[method]('/last-game', lastGameHandler);
   stats[method]('/month', monthHandler);

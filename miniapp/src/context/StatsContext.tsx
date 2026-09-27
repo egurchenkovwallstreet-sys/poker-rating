@@ -42,15 +42,18 @@ export function StatsProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<LoadState>('loading');
   const [clubFinishedGames, setClubFinishedGames] = useState<number | null>(null);
   const loadSeq = useRef(0);
-  const monthSeq = useRef(0);
   const hasSuccessfulLoad = useRef(false);
 
-  const loadMonth = useCallback(async (m: string) => {
-    const seq = ++monthSeq.current;
-    const mon = await api.getMonthStats(m);
-    if (seq !== monthSeq.current) return;
-    setMonthStats(Array.isArray(mon.stats) ? mon.stats : []);
-  }, []);
+  const applyBootstrap = useCallback(
+    (data: Awaited<ReturnType<typeof api.getBootstrap>>) => {
+      setClubFinishedGames(data.club.finishedGames);
+      setLastGame(data.lastGame);
+      setOverall(Array.isArray(data.overall) ? data.overall : []);
+      setMonthStats(Array.isArray(data.monthStats) ? data.monthStats : []);
+      setMonthState(data.month);
+    },
+    [],
+  );
 
   const loadAll = useCallback(
     async (monthKey: string) => {
@@ -61,47 +64,21 @@ export function StatsProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const me = await api.getMe();
+        const data = await api.getBootstrap(monthKey);
         if (seq !== loadSeq.current) return;
-        setClubFinishedGames(me.club.finishedGames);
-
-        const last = await api.getLastGame();
-        if (seq !== loadSeq.current) return;
-        setLastGame(last);
-
-        const ov = await api.getOverall();
-        if (seq !== loadSeq.current) return;
-        const stats = Array.isArray(ov.stats) ? ov.stats : [];
-        setOverall(stats);
-
-        if (
-          me.club.finishedGames > 0 &&
-          stats.length === 0 &&
-          me.club.playersInRating > 0
-        ) {
-          throw new Error('API_EMPTY_STATS');
-        }
-
-        await loadMonth(monthKey);
-        if (seq !== loadSeq.current) return;
+        applyBootstrap(data);
         hasSuccessfulLoad.current = true;
         setState('ready');
       } catch (e: unknown) {
         if (seq !== loadSeq.current) return;
         const code = e instanceof Error ? e.message : '';
-        const msg =
-          code === 'API_EMPTY_STATS'
-            ? 'Данные не загрузились (авторизация). Закройте Mini App (×) и откройте снова из бота.'
-            : code
-              ? apiErrorMessage(code)
-              : 'Не удалось загрузить данные';
-        setError(msg);
+        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
         if (!hasSuccessfulLoad.current) {
           setState('error');
         }
       }
     },
-    [loadMonth],
+    [applyBootstrap],
   );
 
   useEffect(() => {
@@ -111,12 +88,12 @@ export function StatsProvider({ children }: { children: ReactNode }) {
   const setMonth = useCallback(
     (m: string) => {
       setMonthState(m);
-      loadMonth(m).catch((e: unknown) => {
+      loadAll(m).catch((e: unknown) => {
         const code = e instanceof Error ? e.message : '';
         setError(code ? apiErrorMessage(code) : 'Не удалось загрузить месяц');
       });
     },
-    [loadMonth],
+    [loadAll],
   );
 
   const reload = useCallback(() => {

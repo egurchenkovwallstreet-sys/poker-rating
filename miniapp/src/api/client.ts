@@ -127,17 +127,33 @@ async function refreshInitDataAfter401(failed: string): Promise<string> {
   return refreshInitDataPromise;
 }
 
+const FETCH_ATTEMPTS = 3;
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 async function fetchWithInitData(path: string, initData: string): Promise<Response> {
   const pathWithQuery = path.startsWith('/') ? path : `/${path}`;
-  return fetch(`${API_URL}${pathWithQuery}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Telegram-Init-Data': initData,
-    },
-    body: JSON.stringify({ initData }),
-    cache: 'no-store',
-  });
+  let lastError: unknown;
+  for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleep(400 * attempt);
+    try {
+      const res = await fetch(`${API_URL}${pathWithQuery}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+        cache: 'no-store',
+        mode: 'cors',
+      });
+      if (res.status === 503 && attempt < FETCH_ATTEMPTS - 1) continue;
+      return res;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  console.error('fetch failed', path, lastError);
+  throw new Error('NETWORK');
 }
 
 async function fetchApi<T>(path: string): Promise<T> {
@@ -150,23 +166,14 @@ async function fetchApi<T>(path: string): Promise<T> {
     throw new Error('NO_INIT_DATA');
   }
 
-  let res: Response;
-  try {
-    res = await fetchWithInitData(path, initData);
-  } catch {
-    throw new Error('NETWORK');
-  }
+  let res = await fetchWithInitData(path, initData);
 
   if (res.status === 401) {
     initData = await refreshInitDataAfter401(initData);
     if (!initData) {
       throw new Error('API_401');
     }
-    try {
-      res = await fetchWithInitData(path, initData);
-    } catch {
-      throw new Error('NETWORK');
-    }
+    res = await fetchWithInitData(path, initData);
   }
 
   if (!res.ok) {
@@ -236,7 +243,9 @@ export function apiErrorMessage(code: string): string {
     case 'VITE_API_URL':
       return 'Mini App не настроен (VITE_API_URL).';
     case 'NETWORK':
-      return 'Нет связи с сервером. Проверьте интернет.';
+      return 'Не удалось достучаться до сервера бота. Подождите 10 сек и нажмите «Повторить» (интернет может быть в порядке).';
+    case 'API_503':
+      return 'Сервер бота перегружен. Подождите 10 секунд и нажмите «Повторить».';
     case 'API_401':
       return 'Сессия Telegram устарела. Закройте Mini App (×) и откройте снова из бота.';
     case 'API_404':
@@ -256,11 +265,43 @@ export interface MeResponse {
   };
 }
 
+export interface BootstrapResponse extends MeResponse {
+  month: string;
+  lastGame: LastGameData | null;
+  overall: OverallStat[];
+  monthStats: MonthStat[];
+}
+
+async function fetchBootstrap(month: string): Promise<BootstrapResponse> {
+  try {
+    return await fetchApi<BootstrapResponse>(`/api/bootstrap?month=${encodeURIComponent(month)}`);
+  } catch (e) {
+    const code = e instanceof Error ? e.message : '';
+    if (code !== 'API_404') throw e;
+    const [me, last, ov, mon] = await Promise.all([
+      fetchApi<MeResponse>('/api/me'),
+      fetchApi<LastGameData | null>('/api/last-game'),
+      fetchApi<{ stats: OverallStat[] }>('/api/overall'),
+      fetchApi<{ month: string; stats: MonthStat[] }>(
+        `/api/month?month=${encodeURIComponent(month)}`,
+      ),
+    ]);
+    return {
+      ...me,
+      month: mon.month,
+      lastGame: last,
+      overall: Array.isArray(ov.stats) ? ov.stats : [],
+      monthStats: Array.isArray(mon.stats) ? mon.stats : [],
+    };
+  }
+}
+
 export const api = {
+  getBootstrap: fetchBootstrap,
   getMe: () => fetchApi<MeResponse>('/api/me'),
   getLastGame: () => fetchApi<LastGameData | null>('/api/last-game'),
   getMonthStats: (month: string) =>
-    fetchApi<{ month: string; stats: MonthStat[] }>(`/api/month?month=${month}`),
+    fetchApi<{ month: string; stats: MonthStat[] }>(`/api/month?month=${encodeURIComponent(month)}`),
   getOverall: () => fetchApi<{ stats: OverallStat[] }>('/api/overall'),
   getPlayer: (id: number) => fetchApi<PlayerProfile>(`/api/player/${id}`),
 };

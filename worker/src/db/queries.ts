@@ -429,6 +429,46 @@ export function getClubStatsSummary(sql: SqlStorage): {
   };
 }
 
+/** Один round-trip к DO: вся статистика для Mini App (меньше таймаутов при нескольких пользователях). */
+export function getStatsBundle(
+  sql: SqlStorage,
+  month: string,
+): {
+  summary: ReturnType<typeof getClubStatsSummary>;
+  lastGame: GameWithResults | null;
+  overall: OverallStatRow[];
+  monthStats: MonthStatRow[];
+} {
+  migrateNormalizeGameDates(sql);
+  const since = statsSinceMs();
+  const overall = getOverall(sql);
+  const lastGame = getLastGame(sql);
+  const monthStats = getMonthStats(sql, month);
+  const finishedGames =
+    firstRow<{ c: number }>(
+      sql,
+      "SELECT COUNT(*) as c FROM games WHERE status = 'finished'",
+    )?.c ?? 0;
+  const finishedGamesInStats =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(*) as c FROM games g WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
+      since,
+    )?.c ?? 0;
+  return {
+    summary: {
+      finishedGames,
+      finishedGamesInStats,
+      playersInRating: overall.length,
+      lastGameId: lastGame?.game.id ?? null,
+      lastGamePlayers: lastGame?.results.length ?? 0,
+    },
+    lastGame,
+    overall,
+    monthStats,
+  };
+}
+
 export function listDraftGames(sql: SqlStorage): Game[] {
   return [
     ...sql.exec("SELECT * FROM games WHERE status = 'draft' ORDER BY created_at DESC").toArray(),

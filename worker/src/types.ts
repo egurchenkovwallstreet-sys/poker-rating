@@ -99,6 +99,7 @@ export type DoAction =
   | { action: 'getStatsDiagnostics' }
   | { action: 'getMonthStats'; month: string }
   | { action: 'getOverall' }
+  | { action: 'getStatsBundle'; month: string }
   | { action: 'getPlayer'; playerId: number }
   | { action: 'getSession'; userId: number }
   | { action: 'setSession'; userId: number; state: string; data: Record<string, unknown> }
