@@ -49,7 +49,8 @@ export function buildAnnounceText(
       ? `\n📋 *Очередь (место → игрок):*\n${roster.map((r) => `${r.queue_order}. ${r.name}`).join('\n')}\n`
       : '\n📋 *Очередь:* пока никого\n';
   return (
-    `🃏 *Покерный вечер*\n\n` +
+    `🃏 *Покерный вечер*\n` +
+    `🆔 *Игра #${game.id}* — кнопки только в этом сообщении\n\n` +
     `📅 ${formatGameDate(game.date)}\n` +
     `💵 Билет: ${formatTicket(game.ticket_price)}\n` +
     `👥 Мест: ${game.max_players} · занято *${yesCount}* · свободно *${spotsLeft}*` +
@@ -89,6 +90,76 @@ async function syncAllInviteMessages(api: Api, env: Env, gameId: number, game: G
       console.error('invite sync failed', row.telegram_id, e);
     }
   }
+}
+
+/** Обновить сообщение, где нажали кнопку (участники часто не в invite_messages). */
+async function refreshClickerInviteMessage(
+  ctx: Context,
+  env: Env,
+  gameId: number,
+  game: Game,
+  telegramId: number,
+): Promise<void> {
+  const text = await loadAnnounceMessage(env, gameId, game);
+  const markup = gameRsvpKeyboard(gameId);
+  const msg = ctx.callbackQuery?.message;
+  if (msg && msg.chat.id === telegramId && 'message_id' in msg) {
+    try {
+      await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: markup });
+      await callDo(env, {
+        action: 'saveInviteMessage',
+        gameId,
+        telegramId,
+        messageId: msg.message_id,
+      });
+      return;
+    } catch (e) {
+      console.error('edit clicker invite failed', telegramId, e);
+    }
+  }
+  try {
+    const sent = await ctx.api.sendMessage(telegramId, text, {
+      parse_mode: 'Markdown',
+      reply_markup: markup,
+    });
+    await callDo(env, {
+      action: 'saveInviteMessage',
+      gameId,
+      telegramId,
+      messageId: sent.message_id,
+    });
+  } catch (e) {
+    console.error('send clicker invite failed', telegramId, e);
+  }
+}
+
+/** После /register — прислать анонсы открытых игр (иначе жмут старые кнопки). */
+export async function sendOpenAnnouncedInvitesToPlayer(
+  api: Api,
+  env: Env,
+  telegramId: number,
+): Promise<number> {
+  const res = await callDo<{ ok: boolean; games: Game[] }>(env, { action: 'listAnnouncedGames' });
+  let sent = 0;
+  for (const game of res.games) {
+    const text = await loadAnnounceMessage(env, game.id, game);
+    try {
+      const msg = await api.sendMessage(telegramId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: gameRsvpKeyboard(game.id),
+      });
+      await callDo(env, {
+        action: 'saveInviteMessage',
+        gameId: game.id,
+        telegramId,
+        messageId: msg.message_id,
+      });
+      sent++;
+    } catch (e) {
+      console.error('open invite send failed', telegramId, game.id, e);
+    }
+  }
+  return sent;
 }
 
 async function notifyAllRegistered(
@@ -272,32 +343,45 @@ export async function handleGameRsvp(
     gameId,
   });
   const game = gameRes.game;
+  if (!game) {
+    await ctx.answerCallbackQuery({ text: 'Игра не найдена', show_alert: true });
+    return;
+  }
+
+  const queueRes = await callDo<{
+    ok: boolean;
+    entries: Array<{ queue_order: number; name: string; player_id: number }>;
+  }>(env, { action: 'listRsvpYesWithQueue', gameId });
 
   if (response === 'yes') {
-    let spot = typeof result.queueOrder === 'number' ? result.queueOrder : 0;
-    if (spot <= 0) {
-      const slotRes = await callDo<{ ok: boolean; queueOrder: number | null; yesCount: number }>(env, {
-        action: 'getRsvpQueueOrder',
-        gameId,
-        playerId: playerRes.player.id,
+    const me = queueRes.entries?.find((e) => e.player_id === playerRes.player!.id);
+    if (!me) {
+      await ctx.answerCallbackQuery({
+        text: `Вы не в очереди игры #${gameId}. Нужен свежий анонс с 🆔 #${gameId}.`,
+        show_alert: true,
       });
-      spot = slotRes.queueOrder ?? slotRes.yesCount ?? 0;
-    }
-    const cap = game.max_players > 0 ? game.max_players : result.yesCount ?? spot;
-    await ctx.answerCallbackQuery({
-      text: spot > 0 ? `Записано: место ${spot} из ${cap}` : 'Не удалось определить место — см. чат',
-      show_alert: spot <= 0,
-    });
-    if (spot <= 0) {
       await ctx.reply(
-        `⚠️ Не удалось зафиксировать место в очереди на игру #${gameId}. Нажмите «Участвую» ещё раз или напишите админу.`,
+        `⚠️ Запись *не сохранилась* (игра #${gameId}).\n\n` +
+          `Часто так бывает, если кнопка из *старого* сообщения или вы зарегистрировались *после* анонса.\n\n` +
+          `Сделайте /register и дождитесь *нового* сообщения с «🆔 Игра #…», затем «Участvую».`,
+        { parse_mode: 'Markdown' },
       );
       return;
     }
-    const short = `✅ ${playerRes.player.name} — место ${spot} в очереди на игру #${gameId} (всего мест ${cap}).`;
+    const spot = me.queue_order;
+    const cap = game.max_players > 0 ? game.max_players : queueRes.entries.length;
+    const queueLine = queueRes.entries.map((e) => `${e.queue_order}. ${e.name}`).join(', ');
+    await ctx.answerCallbackQuery({
+      text: `Игра #${gameId}: место ${spot} из ${cap}`,
+      show_alert: true,
+    });
+    const short =
+      `✅ ${playerRes.player.name} — место ${spot} на игре #${gameId}.\n` + `Очередь: ${queueLine}`;
     await notifyAllRegistered(ctx.api, env, short);
+    await refreshClickerInviteMessage(ctx, env, gameId, game, telegramId);
   } else {
     await ctx.answerCallbackQuery({ text: 'Понятно, без вас' });
+    await refreshClickerInviteMessage(ctx, env, gameId, game, telegramId);
   }
 
   await syncAllInviteMessages(ctx.api, env, gameId, game);

@@ -306,12 +306,13 @@ export function setGameRsvp(
 
   const finalYesCount = countRsvpYes(sql, gameId);
   const slot = getRsvpQueueOrder(sql, gameId, playerId);
+  const inQueue = listRsvpYesWithQueue(sql, gameId).some((r) => r.player_id === playerId);
 
-  if (finalYesCount <= yesBefore || slot == null) {
+  if (finalYesCount <= yesBefore || slot == null || !inQueue) {
     return {
       ok: false,
       error:
-        'Запись не сохранилась. Убедитесь, что вы /register, и нажмите «Участвую» ещё раз.',
+        'Запись не сохранилась. /register и «Участvую» в новом анонсе (🆔 номер игры).',
     };
   }
 

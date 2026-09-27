@@ -29,6 +29,7 @@ import {
   handleAnnounceInput,
   handleGameRsvp,
   listAnnouncedForStart,
+  sendOpenAnnouncedInvitesToPlayer,
   startAnnounceWizard,
   startGameAction,
 } from './announce';
@@ -482,6 +483,13 @@ export function createBot(env: Env): Bot {
         });
         const keyboard = await syncUserBottomMenu(ctx, env, userId);
         await ctx.reply(`✅ Вы зарегистрированы как «${res.player.name}»`, { reply_markup: keyboard });
+        const invites = await sendOpenAnnouncedInvitesToPlayer(ctx.api, env, userId);
+        if (invites > 0) {
+          await ctx.reply(
+            `📢 Отправлено ${invites} анонс(ов) открытых игр. Жмите «Участvую» только в *новом* сообщении с 🆔 номером игры.`,
+            { parse_mode: 'Markdown' },
+          );
+        }
       } catch (e) {
         await ctx.reply(`❌ ${e}\n\nПопробуйте другое имя: /register`);
       }
