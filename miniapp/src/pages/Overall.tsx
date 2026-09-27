@@ -52,7 +52,7 @@ export default function Overall({ onSelectPlayer }: Props) {
         </div>
       ))}
       <div className="text-xs text-tg-hint mt-4 text-center">
-        Сумма +/− по всем завершённым играм, где игрок участвовал
+        Сумма +/− за последние 2 года по всем играм, где игрок участвовал. Вкладка «Месяц» — только выбранный месяц.
       </div>
     </div>
   );

@@ -581,19 +581,16 @@ export function clearSession(sql: SqlStorage, userId: number): void {
 }
 
 /** Даты demo-игр в текущем календарном месяце (для вкладки «Месяц»). */
+/** По одной demo-игре в разные месяцы (для вкладки «Месяц»); в «Общий» — сумма за 2 года. */
 function demoGameTimestamps(count: number): number[] {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  const today = now.getDate();
-  const lastDay = new Date(year, month + 1, 0).getDate();
-  const days: number[] = [];
+  const timestamps: number[] = [];
   for (let i = 0; i < count; i++) {
-    const slot = Math.floor(((i + 1) / (count + 1)) * lastDay);
-    const day = Math.min(Math.max(1, slot), today);
-    days.push(new Date(year, month, day, 20, 0, 0).getTime());
+    const monthsAgo = count - 1 - i;
+    const d = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 15, 20, 0, 0);
+    timestamps.push(d.getTime());
   }
-  return days;
+  return timestamps;
 }
 
 /** Тестовые игроки (без telegram_id) и завершённые игры с результатами (Σ profit = 0). */

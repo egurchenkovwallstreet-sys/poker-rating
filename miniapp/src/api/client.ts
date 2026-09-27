@@ -13,19 +13,55 @@ function readInitDataFromUrl(): string {
   return q ? decodeURIComponent(q) : '';
 }
 
-/** После первого успешного чтения не теряем initData при переключении вкладок (iOS Telegram). */
+const INIT_DATA_STORAGE_KEY = 'poker_rating_tg_init_data';
+
+/** После первого успешного чтения не теряем initData (вкладки, обновление страницы в Telegram). */
 let cachedInitData = '';
+
+function persistInitData(data: string): void {
+  const trimmed = data.trim();
+  if (!trimmed) return;
+  cachedInitData = trimmed;
+  try {
+    sessionStorage.setItem(INIT_DATA_STORAGE_KEY, trimmed);
+  } catch {
+    /* private mode / quota */
+  }
+}
+
+function readStoredInitData(): string {
+  if (cachedInitData) return cachedInitData;
+  try {
+    const stored = sessionStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
+    if (stored) {
+      cachedInitData = stored;
+      return stored;
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
 
 function readInitDataSync(): string {
   const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
   const direct = tg?.initData?.trim();
-  if (direct) return direct;
-  return readInitDataFromUrl();
+  if (direct) {
+    persistInitData(direct);
+    return direct;
+  }
+  const fromUrl = readInitDataFromUrl();
+  if (fromUrl) {
+    persistInitData(fromUrl);
+    return fromUrl;
+  }
+  return readStoredInitData();
 }
 
 /** Telegram иногда отдаёт initData с задержкой после открытия Web App с клавиатуры */
 export async function waitForInitData(timeoutMs = 10000): Promise<string> {
-  if (cachedInitData) return cachedInitData;
+  const stored = readStoredInitData();
+  if (stored) return stored;
 
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
   tg?.ready?.();
@@ -34,13 +70,13 @@ export async function waitForInitData(timeoutMs = 10000): Promise<string> {
   while (Date.now() - started < timeoutMs) {
     const data = readInitDataSync();
     if (data) {
-      cachedInitData = data;
+      persistInitData(data);
       return data;
     }
     await new Promise((r) => setTimeout(r, 100));
   }
   const fallback = readInitDataSync();
-  if (fallback) cachedInitData = fallback;
+  if (fallback) persistInitData(fallback);
   return fallback;
 }
 
@@ -69,6 +105,14 @@ async function fetchApi<T>(path: string): Promise<T> {
   }
 
   if (!res.ok) {
+    if (res.status === 401) {
+      cachedInitData = '';
+      try {
+        sessionStorage.removeItem(INIT_DATA_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+    }
     throw new Error(`API_${res.status}`);
   }
   return res.json() as Promise<T>;
@@ -131,7 +175,7 @@ export interface PlayerProfile {
 export function apiErrorMessage(code: string): string {
   switch (code) {
     case 'NO_INIT_DATA':
-      return 'Нет данных Telegram. Закройте Mini App и откройте снова кнопкой внизу в чате с ботом.';
+      return 'Нет данных Telegram. Не обновляйте страницу вручную — закройте Mini App (×) и откройте снова: 📊 Статистика → «Открыть статистику».';
     case 'VITE_API_URL':
       return 'Mini App не настроен (VITE_API_URL).';
     case 'NETWORK':

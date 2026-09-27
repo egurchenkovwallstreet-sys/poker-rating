@@ -50,7 +50,9 @@ export default function MonthStats({ onSelectPlayer }: Props) {
       </select>
 
       {stats.length === 0 ? (
-        <div className="card text-center text-tg-hint">Нет данных за этот месяц</div>
+        <div className="card text-center text-tg-hint">
+          Нет данных за этот месяц. Полный рейтинг — вкладка «Общий».
+        </div>
       ) : (
         stats.map((s) => (
           <div key={s.player_id} className="card">
