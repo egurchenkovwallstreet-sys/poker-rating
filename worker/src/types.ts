@@ -130,6 +130,8 @@ export type DoAction =
   | { action: 'setGameRsvp'; gameId: number; playerId: number; response: 'yes' | 'no' }
   | { action: 'startAnnouncedGame'; gameId: number }
   | { action: 'listAnnouncedGames' }
+  | { action: 'getActiveAnnouncedGame' }
+  | { action: 'listAllInviteMessages' }
   | { action: 'getRsvpSummary'; gameId: number }
   | { action: 'getGameById'; gameId: number }
   | { action: 'listRsvpYesPlayers'; gameId: number }

@@ -216,6 +216,16 @@ export class PokerRoom implements DurableObject {
         }
         case 'listAnnouncedGames':
           return json({ ok: true, games: announce.listAnnouncedGames(this.sql) });
+        case 'getActiveAnnouncedGame': {
+          const active = announce.getActiveAnnouncedGame(this.sql);
+          return json(
+            active
+              ? { ok: true, gameId: active.gameId, game: active.game }
+              : { ok: true, gameId: null, game: null },
+          );
+        }
+        case 'listAllInviteMessages':
+          return json({ ok: true, messages: announce.listAllInviteMessages(this.sql) });
         case 'getRsvpSummary': {
           const summary = announce.getRsvpSummary(this.sql, body.gameId);
           return json({ ok: true, ...summary });

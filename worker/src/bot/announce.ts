@@ -73,19 +73,41 @@ async function loadAnnounceMessage(env: Env, gameId: number, game: Game): Promis
   return buildAnnounceText(game, entries.length, entries);
 }
 
-async function syncAllInviteMessages(api: Api, env: Env, gameId: number, game: Game): Promise<void> {
-  const text = await loadAnnounceMessage(env, gameId, game);
-  const stored = await callDo<{ ok: boolean; messages: Array<{ telegram_id: number; message_id: number }> }>(
-    env,
-    { action: 'listInviteMessages', gameId },
-  );
+async function loadActiveAnnouncePayload(
+  env: Env,
+): Promise<{ text: string; gameId: number; game: Game } | null> {
+  const active = await callDo<{ ok: boolean; gameId: number | null; game: Game | null }>(env, {
+    action: 'getActiveAnnouncedGame',
+  });
+  if (!active.game || active.gameId == null) return null;
+  const text = await loadAnnounceMessage(env, active.gameId, active.game);
+  return { text, gameId: active.gameId, game: active.game };
+}
+
+/** Обновить все сохранённые анонсы в личках: один текст, кнопки с актуальным 🆔 #. */
+async function syncAllInviteMessages(api: Api, env: Env): Promise<void> {
+  const loaded = await loadActiveAnnouncePayload(env);
+  if (!loaded) return;
+  const { text, gameId } = loaded;
+  const stored = await callDo<{
+    ok: boolean;
+    messages: Array<{ game_id: number; telegram_id: number; message_id: number }>;
+  }>(env, { action: 'listAllInviteMessages' });
   const markup = gameRsvpKeyboard(gameId);
-  for (const row of stored.messages) {
+  for (const row of stored.messages ?? []) {
     try {
       await api.editMessageText(row.telegram_id, row.message_id, text, {
         parse_mode: 'Markdown',
         reply_markup: markup,
       });
+      if (row.game_id !== gameId) {
+        await callDo(env, {
+          action: 'saveInviteMessage',
+          gameId,
+          telegramId: row.telegram_id,
+          messageId: row.message_id,
+        });
+      }
     } catch (e) {
       console.error('invite sync failed', row.telegram_id, e);
     }
@@ -139,27 +161,28 @@ export async function sendOpenAnnouncedInvitesToPlayer(
   env: Env,
   telegramId: number,
 ): Promise<number> {
-  const res = await callDo<{ ok: boolean; games: Game[] }>(env, { action: 'listAnnouncedGames' });
-  let sent = 0;
-  for (const game of res.games) {
-    const text = await loadAnnounceMessage(env, game.id, game);
-    try {
-      const msg = await api.sendMessage(telegramId, text, {
-        parse_mode: 'Markdown',
-        reply_markup: gameRsvpKeyboard(game.id),
-      });
-      await callDo(env, {
-        action: 'saveInviteMessage',
-        gameId: game.id,
-        telegramId,
-        messageId: msg.message_id,
-      });
-      sent++;
-    } catch (e) {
-      console.error('open invite send failed', telegramId, game.id, e);
-    }
+  const active = await callDo<{ ok: boolean; gameId: number | null; game: Game | null }>(env, {
+    action: 'getActiveAnnouncedGame',
+  });
+  if (!active.game || active.gameId == null) return 0;
+  const game = active.game;
+  const text = await loadAnnounceMessage(env, active.gameId, game);
+  try {
+    const msg = await api.sendMessage(telegramId, text, {
+      parse_mode: 'Markdown',
+      reply_markup: gameRsvpKeyboard(active.gameId),
+    });
+    await callDo(env, {
+      action: 'saveInviteMessage',
+      gameId: active.gameId,
+      telegramId,
+      messageId: msg.message_id,
+    });
+    return 1;
+  } catch (e) {
+    console.error('open invite send failed', telegramId, active.gameId, e);
+    return 0;
   }
-  return sent;
 }
 
 async function notifyAllRegistered(
@@ -285,6 +308,8 @@ export async function handleAnnounceInput(ctx: Context, env: Env, text: string):
       }
     }
 
+    await syncAllInviteMessages(ctx.api, env);
+
     await ctx.reply(
       `✅ Игра #${activeGameId} создана (старые анонсы закрыты).\nРазослано ${sent} из ${players.players.length} зарегистрированных.\n\n` +
         `⚠️ «Участvую» только в *этом* сообщении с 🆔 #${activeGameId}.\n\n` +
@@ -397,7 +422,7 @@ export async function handleGameRsvp(
     await refreshClickerInviteMessage(ctx, env, activeGameId, game, telegramId);
   }
 
-  await syncAllInviteMessages(ctx.api, env, activeGameId, game);
+  await syncAllInviteMessages(ctx.api, env);
 
   if (result.registrationClosed) {
     const admins = parseAdminIds(env.ADMIN_IDS);

@@ -433,6 +433,9 @@ export function createBot(env: Env): Bot {
         otherAnnouncedWithYes: Array<{ game_id: number; yes_count: number }>;
         tableSql: string | null;
         latestAnnounced: number | null;
+        resolvedGameId?: number;
+        yesOnResolved?: Array<{ queue_order: number; name: string; player_id: number }>;
+        allYesByGame?: Array<{ game_id: number; status: string; yes_count: number }>;
       };
     }>(env, { action: 'getRsvpDebug', gameId: id });
     const d = res.debug;
@@ -453,15 +456,26 @@ export function createBot(env: Env): Bot {
       d.otherAnnouncedWithYes.length > 0
         ? d.otherAnnouncedWithYes.map((g) => `#${g.game_id}: ${g.yes_count}`).join(', ')
         : 'нет';
+    const resolved = d.resolvedGameId ?? id;
+    const resolvedQueue =
+      (d.yesOnResolved?.length ?? 0) > 0
+        ? d.yesOnResolved!.map((r) => `${r.queue_order}. ${r.name} (pid ${r.player_id})`).join('\n')
+        : '(пусто)';
+    const allGames =
+      (d.allYesByGame?.length ?? 0) > 0
+        ? d.allYesByGame!.map((g) => `#${g.game_id} [${g.status}]: ${g.yes_count}`).join('\n')
+        : '(нет yes нигде)';
     const ddl = d.tableSql ? d.tableSql.replace(/\s+/g, ' ').slice(0, 120) : '?';
     await ctx.reply(
-      `🔍 RSVP debug #${id}\n` +
+      `🔍 RSVP debug запрос #${id}\n` +
         `актуальный анонс: ${d.latestAnnounced != null ? `#${d.latestAnnounced}` : 'нет'}\n` +
-        `status: ${d.game.status}, max_players: ${d.game.max_players}\n` +
-        `таблица: game_rsvp_registrations\n` +
-        `yes на этой игре: ${d.yesCount}\n` +
+        `resolve(#${id}) → #${resolved}\n` +
+        `status #${id}: ${d.game.status}, max: ${d.game.max_players}\n` +
+        `yes на #${id} (сыро): ${d.yesCount}\n` +
         `yes на других анонсах: ${others}\n\n` +
-        `Очередь:\n${queue}\n\n` +
+        `Очередь на #${id} (сыро):\n${queue}\n\n` +
+        `Очередь после resolve (#${resolved}):\n${resolvedQueue}\n\n` +
+        `Все yes по game_id:\n${allGames}\n\n` +
         `DDL: ${ddl}…`,
     );
   });

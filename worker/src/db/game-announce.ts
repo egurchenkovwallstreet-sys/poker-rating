@@ -97,6 +97,25 @@ export function getLatestAnnouncedGameId(sql: SqlStorage): number | null {
   );
 }
 
+export function getActiveAnnouncedGame(
+  sql: SqlStorage,
+): { gameId: number; game: Game } | null {
+  const gameId = getLatestAnnouncedGameId(sql);
+  if (gameId == null) return null;
+  const game = getGameById(sql, gameId);
+  return game ? { gameId, game } : null;
+}
+
+export function listAllInviteMessages(
+  sql: SqlStorage,
+): Array<{ game_id: number; telegram_id: number; message_id: number }> {
+  return [
+    ...sql
+      .exec('SELECT game_id, telegram_id, message_id FROM game_invite_messages')
+      .toArray(),
+  ] as Array<{ game_id: number; telegram_id: number; message_id: number }>;
+}
+
 function gameRsvpsPkColumnNames(sql: SqlStorage): string[] {
   try {
     const pkCols = [
@@ -370,10 +389,12 @@ export function createAnnouncedGame(
 
 export function countRsvpYes(sql: SqlStorage, gameId: number): number {
   ensureRsvpRegistrationsTable(sql);
+  const gid = resolveRsvpGameId(sql, gameId);
+  if (!Number.isFinite(gid)) return 0;
   const row = sql
     .exec(
       `SELECT COUNT(*) as c FROM ${RSVP_TABLE} WHERE game_id = ? AND response = 'yes'`,
-      gameId,
+      gid,
     )
     .one() as { c: number };
   return row.c;
@@ -416,14 +437,16 @@ export function getRsvpQueueOrder(
   gameId: number,
   playerId: number,
 ): number | null {
-  dedupeGameRsvps(sql, gameId);
   ensureRsvpRegistrationsTable(sql);
+  const gid = resolveRsvpGameId(sql, gameId);
+  if (!Number.isFinite(gid)) return null;
+  dedupeGameRsvps(sql, gid);
   const me = firstRow<{ created_at: number; response: string }>(
     sql,
     `SELECT created_at, response FROM ${RSVP_TABLE}
      WHERE game_id = ? AND player_id = ?
      ORDER BY rowid ASC LIMIT 1`,
-    gameId,
+    gid,
     playerId,
   );
   if (!me || me.response !== 'yes') return null;
@@ -433,7 +456,7 @@ export function getRsvpQueueOrder(
      FROM ${RSVP_TABLE} r
      WHERE r.game_id = ? AND r.response = 'yes'
        AND (r.created_at < ? OR (r.created_at = ? AND r.player_id < ?))`,
-    gameId,
+    gid,
     me.created_at,
     me.created_at,
     playerId,
@@ -710,6 +733,8 @@ export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
 /** Состав для старта: JOIN + запасной путь только по player_id из RSVP. */
 export function listRsvpYesPlayersRobust(sql: SqlStorage, gameId: number): Player[] {
   ensureRsvpRegistrationsTable(sql);
+  const gid = resolveRsvpGameId(sql, gameId);
+  if (!Number.isFinite(gid)) return [];
   const rows = [
     ...sql
       .exec(
@@ -723,13 +748,13 @@ export function listRsvpYesPlayersRobust(sql: SqlStorage, gameId: number): Playe
          LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
          ORDER BY r.created_at ASC, r.player_id ASC`,
-        gameId,
+        gid,
       )
       .toArray(),
   ] as unknown as Player[];
   if (rows.length > 0) return rows;
 
-  const yesCount = countRsvpYes(sql, gameId);
+  const yesCount = countRsvpYes(sql, gid);
   if (yesCount === 0) return [];
 
   const idRows = [
@@ -738,7 +763,7 @@ export function listRsvpYesPlayersRobust(sql: SqlStorage, gameId: number): Playe
         `SELECT player_id, created_at FROM ${RSVP_TABLE}
          WHERE game_id = ? AND response = 'yes'
          ORDER BY created_at ASC, player_id ASC`,
-        gameId,
+        gid,
       )
       .toArray(),
   ] as Array<{ player_id: number; created_at: number }>;
@@ -782,7 +807,9 @@ export function listRsvpYesWithQueue(
   gameId: number,
 ): Array<{ queue_order: number; name: string; player_id: number }> {
   ensureRsvpRegistrationsTable(sql);
-  dedupeGameRsvps(sql, gameId);
+  const gid = resolveRsvpGameId(sql, gameId);
+  if (!Number.isFinite(gid)) return [];
+  dedupeGameRsvps(sql, gid);
   const rows = [
     ...sql
       .exec(
@@ -794,7 +821,7 @@ export function listRsvpYesWithQueue(
          LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
          ORDER BY r.created_at ASC, r.player_id ASC`,
-        gameId,
+        gid,
       )
       .toArray(),
   ] as Array<{ name: string; created_at: number; r_player_id: number }>;
@@ -816,6 +843,10 @@ export function getRsvpDebugInfo(
   yesRows: Array<{ player_id: number; name: string; created_at: number; queue_order: number | null }>;
   yesCount: number;
   otherAnnouncedWithYes: Array<{ game_id: number; yes_count: number }>;
+  latestAnnounced: number | null;
+  resolvedGameId: number;
+  yesOnResolved: Array<{ queue_order: number; name: string; player_id: number }>;
+  allYesByGame: Array<{ game_id: number; status: string; yes_count: number }>;
 } {
   ensureRsvpRegistrationsTable(sql);
   const game = getGameById(sql, gameId);
@@ -836,6 +867,10 @@ export function getRsvpDebugInfo(
       )
       .toArray(),
   ] as Array<{ player_id: number; name: string; created_at: number }>;
+  const yesRowsWithOrder = yesRows.map((r, i) => ({
+    ...r,
+    queue_order: i + 1,
+  }));
   const otherAnnouncedWithYes = [
     ...sql
       .exec(
@@ -850,15 +885,32 @@ export function getRsvpDebugInfo(
       .toArray(),
   ] as Array<{ game_id: number; yes_count: number }>;
   const latestAnnounced = getLatestAnnouncedGameId(sql);
+  const resolvedGameId = resolveRsvpGameId(sql, gameId);
+  const yesOnResolved = listRsvpYesWithQueue(sql, resolvedGameId);
+  const allYesByGame = [
+    ...sql
+      .exec(
+        `SELECT r.game_id, g.status, COUNT(*) as yes_count
+         FROM ${RSVP_TABLE} r
+         JOIN games g ON g.id = r.game_id
+         WHERE r.response = 'yes'
+         GROUP BY r.game_id
+         ORDER BY yes_count DESC`,
+      )
+      .toArray(),
+  ] as Array<{ game_id: number; status: string; yes_count: number }>;
   return {
     game,
     pkColumns: gameRsvpsPkColumnNames(sql),
     tableSql: master?.sql ?? null,
     badGameIdUnique: hasUniqueIndexOnlyOnGameId(sql),
-    yesRows,
+    yesRows: yesRowsWithOrder,
     yesCount: yesRows.length,
     otherAnnouncedWithYes,
     latestAnnounced,
+    resolvedGameId,
+    yesOnResolved,
+    allYesByGame,
   };
 }
 
@@ -906,13 +958,15 @@ export function prepareOpenGameForResults(
 export function getRsvpSummary(
   sql: SqlStorage,
   gameId: number,
-): { yesCount: number; maxPlayers: number; spotsLeft: number } {
-  const game = getGameById(sql, gameId);
-  if (!game) return { yesCount: 0, maxPlayers: 0, spotsLeft: 0 };
-  const yesCount = countRsvpYes(sql, gameId);
+): { yesCount: number; maxPlayers: number; spotsLeft: number; resolvedGameId: number } {
+  const gid = resolveRsvpGameId(sql, gameId);
+  const game = getGameById(sql, gid);
+  if (!game) return { yesCount: 0, maxPlayers: 0, spotsLeft: 0, resolvedGameId: gid };
+  const yesCount = countRsvpYes(sql, gid);
   return {
     yesCount,
     maxPlayers: game.max_players,
     spotsLeft: Math.max(0, game.max_players - yesCount),
+    resolvedGameId: gid,
   };
 }
