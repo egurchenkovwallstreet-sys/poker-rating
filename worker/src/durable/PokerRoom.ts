@@ -18,10 +18,17 @@ export class PokerRoom implements DurableObject {
 
   private async ensureInit(): Promise<void> {
     if (this.initialized) return;
-    try {
-      db.initSchema(this.sql, SCHEMA_SQL);
-    } catch (e) {
-      console.error('DO initSchema failed:', e);
+    const hasCore = [
+      ...this.sql
+        .exec("SELECT name FROM sqlite_master WHERE type='table' AND name='players' LIMIT 1")
+        .toArray(),
+    ];
+    if (hasCore.length === 0) {
+      try {
+        db.initSchema(this.sql, SCHEMA_SQL);
+      } catch (e) {
+        console.error('DO initSchema failed:', e);
+      }
     }
     this.initialized = true;
   }

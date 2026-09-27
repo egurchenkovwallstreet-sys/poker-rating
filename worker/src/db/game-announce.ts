@@ -423,8 +423,6 @@ export function listAnnouncedGamesForStart(
   sql: SqlStorage,
 ): Array<{ id: number; date: number; max_players: number; yesCount: number }> {
   ensureRsvpRegistrationsTable(sql);
-  const latest = getLatestAnnouncedGameId(sql);
-  if (latest != null) consolidateYesRsvpsToGame(sql, latest);
   const games = listAnnouncedGames(sql);
   return games.map((g) => ({
     id: g.id,

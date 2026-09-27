@@ -100,14 +100,6 @@ async function syncAllInviteMessages(api: Api, env: Env): Promise<void> {
         parse_mode: 'Markdown',
         reply_markup: markup,
       });
-      if (row.game_id !== gameId) {
-        await callDo(env, {
-          action: 'saveInviteMessage',
-          gameId,
-          telegramId: row.telegram_id,
-          messageId: row.message_id,
-        });
-      }
     } catch (e) {
       console.error('invite sync failed', row.telegram_id, e);
     }
@@ -421,8 +413,6 @@ export async function handleGameRsvp(
     await ctx.answerCallbackQuery({ text: 'Понятно, без вас' });
     await refreshClickerInviteMessage(ctx, env, activeGameId, game, telegramId);
   }
-
-  await syncAllInviteMessages(ctx.api, env);
 
   if (result.registrationClosed) {
     const admins = parseAdminIds(env.ADMIN_IDS);
