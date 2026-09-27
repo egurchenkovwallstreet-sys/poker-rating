@@ -1,14 +1,40 @@
 import { useEffect, useState } from 'react';
 import {
-  LineChart,
+  ComposedChart,
+  Bar,
   Line,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
+  Cell,
 } from 'recharts';
 import { formatDate, formatProfit, profitClass, type PlayerProfile } from '../api/client';
+
+type ChartPoint = PlayerProfile['chart'][number];
+
+function ProfileChartTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: ChartPoint }>;
+}) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload;
+  return (
+    <div className="rounded-lg border border-white/10 bg-[var(--tg-theme-bg-color,#1c1c1e)] px-3 py-2 text-xs shadow-lg">
+      <div className="font-medium mb-1">{formatDate(row.date)}</div>
+      <div className={profitClass(row.profit)}>
+        Результат игры: {formatProfit(row.profit)}
+      </div>
+      <div className={`mt-0.5 ${profitClass(row.cumulative)}`}>
+        Накопительно: {formatProfit(row.cumulative)}
+      </div>
+    </div>
+  );
+}
 import { useStats } from '../context/StatsContext';
 import Loading from '../components/Loading';
 import ErrorState from '../components/ErrorState';
@@ -89,23 +115,40 @@ export default function Player({ playerId, onSelectPlayer }: Props) {
       {profile.chart.length > 0 && (
         <div className="card mb-3">
           <div className="text-sm text-tg-hint mb-2">
-            Динамика (кумулятивный +/-) · последняя точка = итого
+            Столбцы — выигрыш/проигрыш в дату игры; линия — накопительный итог
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={profile.chart}>
+          <ResponsiveContainer width="100%" height={200}>
+            <ComposedChart data={profile.chart} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
               <XAxis
                 dataKey="date"
-                tickFormatter={(v) => new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
+                type="number"
+                scale="time"
+                domain={['dataMin', 'dataMax']}
+                tickFormatter={(v) =>
+                  new Date(v).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+                }
                 tick={{ fontSize: 10 }}
               />
-              <YAxis tick={{ fontSize: 10 }} width={36} />
-              <Tooltip
-                labelFormatter={(v) => formatDate(Number(v))}
-                formatter={(v: number) => [formatProfit(v), '+/-']}
-              />
+              <YAxis tick={{ fontSize: 10 }} width={40} />
+              <Tooltip content={<ProfileChartTooltip />} />
               <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
-              <Line type="monotone" dataKey="cumulative" stroke="var(--tg-theme-button-color, #3390ec)" dot={false} />
-            </LineChart>
+              <Bar dataKey="profit" barSize={8} radius={[2, 2, 0, 0]}>
+                {profile.chart.map((entry) => (
+                  <Cell
+                    key={entry.game_id}
+                    fill={entry.profit >= 0 ? 'rgba(34, 197, 94, 0.85)' : 'rgba(239, 68, 68, 0.85)'}
+                  />
+                ))}
+              </Bar>
+              <Line
+                type="stepAfter"
+                dataKey="cumulative"
+                stroke="var(--tg-theme-button-color, #3390ec)"
+                strokeWidth={2}
+                dot={{ r: 2 }}
+                activeDot={{ r: 4 }}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       )}

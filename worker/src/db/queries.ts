@@ -968,7 +968,7 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
   const gameRows = [
     ...sql
       .exec(
-        `SELECT g.id as game_id, g.date, gr.buyin, gr.payout, gr.profit, gr.place
+        `SELECT g.id as game_id, ${SQL_GAME_DATE_MS} as date, gr.buyin, gr.payout, gr.profit, gr.place
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
          WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_IN_STATS}
