@@ -254,13 +254,17 @@ export function createBot(env: Env): Bot {
         players: number;
         games: number;
         playerNames: string[];
+        linkedAdmin: boolean;
       }>(env, {
         action: 'seedDemo',
         createdBy: ctx.from!.id,
       });
       const list = res.playerNames.map((n) => `• ${n}`).join('\n');
+      const adminLine = res.linkedAdmin
+        ? '\n\nВы зарегистрированы — ваш профиль в demo-играх (вместо «Демо Иван»).'
+        : '\n\nПодсказка: /register — тогда следующий seed добавит вас в demo-игры для вкладки «Профиль».';
       await ctx.reply(
-        `✅ Тестовые данные добавлены\n\nИгроки (без Telegram, только рейтинг):\n${list}\n\nЗавершённых игр: ${res.games}\n\nОткройте «Статистика» внизу или Mini App.`,
+        `✅ Тестовые данные добавлены\n\nDemo-игроки (рейтинг в таблицах):\n${list}\n\nЗавершённых игр: ${res.games}${adminLine}\n\n📊 Статистика → «Открыть статистику».`,
       );
     } catch (e) {
       await ctx.reply(`❌ ${e}`);

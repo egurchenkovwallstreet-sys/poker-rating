@@ -530,11 +530,28 @@ export function clearSession(sql: SqlStorage, userId: number): void {
   sql.exec('DELETE FROM bot_sessions WHERE user_id = ?', userId);
 }
 
+/** Даты demo-игр в текущем календарном месяце (для вкладки «Месяц»). */
+function demoGameTimestamps(count: number): number[] {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const today = now.getDate();
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const days: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const slot = Math.floor(((i + 1) / (count + 1)) * lastDay);
+    const day = Math.min(Math.max(1, slot), today);
+    days.push(new Date(year, month, day, 20, 0, 0).getTime());
+  }
+  return days;
+}
+
 /** Тестовые игроки (без telegram_id) и завершённые игры с результатами (Σ profit = 0). */
 export function seedDemo(sql: SqlStorage, createdBy: number): {
   players: number;
   games: number;
   playerNames: string[];
+  linkedAdmin: boolean;
 } {
   const names = ['Демо Иван', 'Демо Мария', 'Демо Олег', 'Демо Петр', 'Демо Саша', 'Демо Катя'];
   const playerIds: number[] = [];
@@ -583,11 +600,18 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
     ],
   ];
 
-  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const registered = getPlayerByTelegramId(sql, createdBy);
+  const rosterIds = (): number[] => {
+    const ids = playerIds.slice(0, 6);
+    if (registered) ids[0] = registered.id;
+    return ids;
+  };
+
+  const gameDates = demoGameTimestamps(gameSets.length);
   let gamesCreated = 0;
   for (let g = 0; g < gameSets.length; g++) {
     const set = gameSets[g];
-    const subsetIds = playerIds.slice(0, Math.min(6, playerIds.length));
+    const subsetIds = rosterIds();
     const gameId = createGame(sql, subsetIds, createdBy);
     for (const [idx, buyin, payout] of set) {
       if (idx >= subsetIds.length) continue;
@@ -596,10 +620,14 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
     const fin = finishGame(sql, gameId);
     if (fin.ok) {
       gamesCreated++;
-      const gameDate = Date.now() - (gameSets.length - g) * weekMs;
-      sql.exec('UPDATE games SET date = ? WHERE id = ?', gameDate, gameId);
+      sql.exec('UPDATE games SET date = ? WHERE id = ?', gameDates[g], gameId);
     }
   }
 
-  return { players: playerIds.length, games: gamesCreated, playerNames: names };
+  return {
+    players: playerIds.length,
+    games: gamesCreated,
+    playerNames: names,
+    linkedAdmin: !!registered,
+  };
 }
