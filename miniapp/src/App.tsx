@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { StatsProvider } from './context/StatsContext';
+import { formatDate } from './api/client';
+import { StatsProvider, useStats } from './context/StatsContext';
 import TabBar, { type Tab } from './components/TabBar';
 import LastGame from './pages/LastGame';
 import MonthStats from './pages/MonthStats';
@@ -21,6 +22,7 @@ function tabFromUrl(): Tab | null {
 }
 
 function AppBody() {
+  const { updatedAt } = useStats();
   const [tab, setTab] = useState<Tab>(() => tabFromUrl() || 'last');
   const [playerId, setPlayerId] = useState<number | null>(null);
 
@@ -49,7 +51,14 @@ function AppBody() {
 
   return (
     <>
-      <header className="page-header">{titles[tab]}</header>
+      <header className="page-header">
+        {titles[tab]}
+        {updatedAt != null && (
+          <div className="text-xs font-normal text-tg-hint mt-1">
+            Общая таблица · обновлено {formatDate(updatedAt)}
+          </div>
+        )}
+      </header>
 
       <div className={panelClass('last')}>
         <LastGame onSelectPlayer={handleSelectPlayer} />

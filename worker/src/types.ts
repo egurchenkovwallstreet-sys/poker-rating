@@ -77,6 +77,21 @@ export interface PlayerProfile {
   }>;
 }
 
+/** Общий снимок для Mini App — один на клуб, без персональной авторизации. */
+export interface PublicStatsSnapshot {
+  updatedAt: number;
+  club: {
+    finishedGames: number;
+    playersInRating: number;
+    lastGamePlayers: number;
+  };
+  lastGame: GameWithResults | null;
+  overall: OverallStatRow[];
+  months: string[];
+  monthStats: Record<string, MonthStatRow[]>;
+  profiles: Record<string, PlayerProfile>;
+}
+
 export type DoAction =
   | { action: 'addPlayer'; name: string; telegramId?: number }
   | { action: 'registerPlayer'; name: string; telegramId: number; avatarFileId?: string | null }
@@ -100,6 +115,8 @@ export type DoAction =
   | { action: 'getMonthStats'; month: string }
   | { action: 'getOverall' }
   | { action: 'getStatsBundle'; month: string }
+  | { action: 'getPublicStatsSnapshot' }
+  | { action: 'refreshStatsSnapshot' }
   | { action: 'getPlayer'; playerId: number }
   | { action: 'getSession'; userId: number }
   | { action: 'setSession'; userId: number; state: string; data: Record<string, unknown> }

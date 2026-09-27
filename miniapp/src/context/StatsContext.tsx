@@ -15,6 +15,8 @@ import {
   type LastGameData,
   type MonthStat,
   type OverallStat,
+  type PlayerProfile,
+  type PublicStatsSnapshot,
 } from '../api/client';
 
 type LoadState = 'loading' | 'ready' | 'error';
@@ -24,96 +26,93 @@ interface StatsContextValue {
   overall: OverallStat[] | undefined;
   month: string;
   monthStats: MonthStat[] | undefined;
+  availableMonths: string[];
+  updatedAt: number | null;
   error: string | null;
   state: LoadState;
   clubFinishedGames: number | null;
   setMonth: (month: string) => void;
   reload: () => void;
+  getProfile: (playerId: number) => PlayerProfile | undefined;
 }
 
 const StatsContext = createContext<StatsContextValue | null>(null);
 
+function monthStatsFor(snapshot: PublicStatsSnapshot, monthKey: string): MonthStat[] {
+  const stats = snapshot.monthStats[monthKey];
+  return Array.isArray(stats) ? stats : [];
+}
+
 export function StatsProvider({ children }: { children: ReactNode }) {
-  const [lastGame, setLastGame] = useState<LastGameData | null | undefined>(undefined);
-  const [overall, setOverall] = useState<OverallStat[] | undefined>(undefined);
+  const [snapshot, setSnapshot] = useState<PublicStatsSnapshot | null>(null);
   const [month, setMonthState] = useState(currentMonth());
-  const [monthStats, setMonthStats] = useState<MonthStat[] | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>('loading');
-  const [clubFinishedGames, setClubFinishedGames] = useState<number | null>(null);
   const loadSeq = useRef(0);
-  const hasSuccessfulLoad = useRef(false);
+  const hasLoaded = useRef(false);
 
-  const applyBootstrap = useCallback(
-    (data: Awaited<ReturnType<typeof api.getBootstrap>>) => {
-      setClubFinishedGames(data.club.finishedGames);
-      setLastGame(data.lastGame);
-      setOverall(Array.isArray(data.overall) ? data.overall : []);
-      setMonthStats(Array.isArray(data.monthStats) ? data.monthStats : []);
-      setMonthState(data.month);
-    },
-    [],
-  );
+  const applySnapshot = useCallback((data: PublicStatsSnapshot) => {
+    setSnapshot(data);
+    const defaultMonth =
+      data.months.includes(currentMonth()) ? currentMonth() : data.months[0] ?? currentMonth();
+    setMonthState(defaultMonth);
+  }, []);
 
-  const loadAll = useCallback(
-    async (monthKey: string) => {
-      const seq = ++loadSeq.current;
-      setError(null);
-      if (!hasSuccessfulLoad.current) {
-        setState('loading');
-      }
+  const loadAll = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    setError(null);
+    if (!hasLoaded.current) setState('loading');
 
-      try {
-        const data = await api.getBootstrap(monthKey);
-        if (seq !== loadSeq.current) return;
-        applyBootstrap(data);
-        hasSuccessfulLoad.current = true;
-        setState('ready');
-      } catch (e: unknown) {
-        if (seq !== loadSeq.current) return;
-        const code = e instanceof Error ? e.message : '';
-        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
-        if (!hasSuccessfulLoad.current) {
-          setState('error');
-        }
-      }
-    },
-    [applyBootstrap],
-  );
+    try {
+      const data = await api.getPublicStats();
+      if (seq !== loadSeq.current) return;
+      applySnapshot(data);
+      hasLoaded.current = true;
+      setState('ready');
+    } catch (e: unknown) {
+      if (seq !== loadSeq.current) return;
+      const code = e instanceof Error ? e.message : '';
+      setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
+      if (!hasLoaded.current) setState('error');
+    }
+  }, [applySnapshot]);
 
   useEffect(() => {
-    loadAll(currentMonth());
+    loadAll();
   }, [loadAll]);
 
-  const setMonth = useCallback(
-    (m: string) => {
-      setMonthState(m);
-      loadAll(m).catch((e: unknown) => {
-        const code = e instanceof Error ? e.message : '';
-        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить месяц');
-      });
-    },
-    [loadAll],
-  );
+  const setMonth = useCallback((m: string) => {
+    setMonthState(m);
+  }, []);
 
   const reload = useCallback(() => {
-    loadAll(month);
-  }, [loadAll, month]);
+    loadAll();
+  }, [loadAll]);
 
-  const value = useMemo(
-    () => ({
+  const getProfile = useCallback(
+    (playerId: number) => snapshot?.profiles[String(playerId)],
+    [snapshot],
+  );
+
+  const value = useMemo((): StatsContextValue => {
+    const lastGame = snapshot?.lastGame as LastGameData | null | undefined;
+    const overall = snapshot?.overall;
+    const monthStats = snapshot ? monthStatsFor(snapshot, month) : undefined;
+    return {
       lastGame,
       overall,
       month,
       monthStats,
+      availableMonths: snapshot?.months ?? [],
+      updatedAt: snapshot?.updatedAt ?? null,
       error,
       state,
-      clubFinishedGames,
+      clubFinishedGames: snapshot?.club.finishedGames ?? null,
       setMonth,
       reload,
-    }),
-    [lastGame, overall, month, monthStats, error, state, clubFinishedGames, setMonth, reload],
-  );
+      getProfile,
+    };
+  }, [snapshot, month, error, state, setMonth, reload, getProfile]);
 
   return <StatsContext.Provider value={value}>{children}</StatsContext.Provider>;
 }

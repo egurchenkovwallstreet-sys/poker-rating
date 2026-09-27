@@ -111,6 +111,13 @@ export class PokerRoom implements DurableObject {
           const bundle = db.getStatsBundle(this.sql, body.month);
           return json({ ok: true, bundle });
         }
+        case 'getPublicStatsSnapshot': {
+          const snapshot = db.getPublicStatsSnapshot(this.sql);
+          return json({ ok: true, snapshot });
+        }
+        case 'refreshStatsSnapshot':
+          db.refreshStatsSnapshot(this.sql);
+          return json({ ok: true });
         case 'getPlayer': {
           const profile = db.getPlayerProfile(this.sql, body.playerId);
           return json(profile ? { ok: true, profile } : { ok: false, error: 'Игрок не найден' }, profile ? 200 : 404);

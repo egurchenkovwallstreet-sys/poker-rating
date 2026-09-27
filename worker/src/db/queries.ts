@@ -14,6 +14,7 @@ import type {
   OverallStatRow,
   Player,
   PlayerProfile,
+  PublicStatsSnapshot,
 } from '../types';
 
 export function initSchema(sql: SqlStorage, schemaSql: string): void {
@@ -66,6 +67,17 @@ function migrateSchema(sql: SqlStorage): void {
     `);
   } catch (e) {
     console.error('migrate game_invite_messages:', e);
+  }
+  try {
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS stats_snapshot (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+  } catch (e) {
+    console.error('migrate stats_snapshot:', e);
   }
   migrateNormalizeGameDates(sql);
 }
@@ -291,6 +303,7 @@ export function finishGame(sql: SqlStorage, gameId: number): { ok: true } | { ok
   }
 
   sql.exec('UPDATE games SET status = ?, date = ? WHERE id = ?', 'finished', Date.now(), gameId);
+  refreshStatsSnapshot(sql);
   return { ok: true };
 }
 
@@ -467,6 +480,80 @@ export function getStatsBundle(
     overall,
     monthStats,
   };
+}
+
+function currentMonthKeyUtc(): string {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function listStatsMonthsWithGames(sql: SqlStorage): string[] {
+  migrateNormalizeGameDates(sql);
+  const since = statsSinceMs();
+  const rows = [
+    ...sql
+      .exec(
+        `SELECT DISTINCT strftime('%Y-%m', datetime((${SQL_GAME_DATE_MS}) / 1000, 'unixepoch')) AS month_key
+         FROM games g
+         INNER JOIN game_results gr ON gr.game_id = g.id
+         WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         ORDER BY month_key DESC`,
+        since,
+      )
+      .toArray(),
+  ] as Array<{ month_key: string }>;
+  return rows.map((r) => r.month_key).filter((m) => /^\d{4}-\d{2}$/.test(m));
+}
+
+export function buildPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
+  const monthKey = currentMonthKeyUtc();
+  const bundle = getStatsBundle(sql, monthKey);
+  const months = listStatsMonthsWithGames(sql);
+  const monthStats: Record<string, MonthStatRow[]> = {};
+  for (const m of months) {
+    monthStats[m] = getMonthStats(sql, m);
+  }
+  const profiles: Record<string, PlayerProfile> = {};
+  for (const row of bundle.overall) {
+    const profile = getPlayerProfile(sql, row.player_id);
+    if (profile) profiles[String(row.player_id)] = profile;
+  }
+  return {
+    updatedAt: Date.now(),
+    club: {
+      finishedGames: bundle.summary.finishedGames,
+      playersInRating: bundle.summary.playersInRating,
+      lastGamePlayers: bundle.summary.lastGamePlayers,
+    },
+    lastGame: bundle.lastGame,
+    overall: bundle.overall,
+    months,
+    monthStats,
+    profiles,
+  };
+}
+
+export function refreshStatsSnapshot(sql: SqlStorage): void {
+  const payload = buildPublicStatsSnapshot(sql);
+  sql.exec(
+    `INSERT INTO stats_snapshot (id, payload, updated_at) VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+    JSON.stringify(payload),
+    payload.updatedAt,
+  );
+}
+
+export function getPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
+  const row = firstRow<{ payload: string }>(sql, 'SELECT payload FROM stats_snapshot WHERE id = 1');
+  if (!row?.payload) {
+    refreshStatsSnapshot(sql);
+    const again = firstRow<{ payload: string }>(sql, 'SELECT payload FROM stats_snapshot WHERE id = 1');
+    if (!again?.payload) {
+      return buildPublicStatsSnapshot(sql);
+    }
+    return JSON.parse(again.payload) as PublicStatsSnapshot;
+  }
+  return JSON.parse(row.payload) as PublicStatsSnapshot;
 }
 
 export function listDraftGames(sql: SqlStorage): Game[] {
@@ -808,6 +895,8 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
       deleteGame(sql, gameId);
     }
   }
+
+  refreshStatsSnapshot(sql);
 
   return {
     players: playerIds.length,

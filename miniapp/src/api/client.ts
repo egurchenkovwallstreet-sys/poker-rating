@@ -272,6 +272,47 @@ export interface BootstrapResponse extends MeResponse {
   monthStats: MonthStat[];
 }
 
+export interface PublicStatsSnapshot {
+  updatedAt: number;
+  club: {
+    finishedGames: number;
+    playersInRating: number;
+    lastGamePlayers: number;
+  };
+  lastGame: LastGameData | null;
+  overall: OverallStat[];
+  months: string[];
+  monthStats: Record<string, MonthStat[]>;
+  profiles: Record<string, PlayerProfile>;
+}
+
+const PUBLIC_STATS_ATTEMPTS = 3;
+
+export async function fetchPublicStats(): Promise<PublicStatsSnapshot> {
+  if (!API_URL) {
+    throw new Error('VITE_API_URL');
+  }
+  let lastError: unknown;
+  for (let attempt = 0; attempt < PUBLIC_STATS_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleep(400 * attempt);
+    try {
+      const res = await fetch(`${API_URL}/api/public/stats`, {
+        method: 'GET',
+        cache: 'default',
+        mode: 'cors',
+      });
+      if (res.status === 503 && attempt < PUBLIC_STATS_ATTEMPTS - 1) continue;
+      if (!res.ok) throw new Error(`API_${res.status}`);
+      return (await res.json()) as PublicStatsSnapshot;
+    } catch (e) {
+      lastError = e;
+      if (e instanceof Error && e.message.startsWith('API_')) throw e;
+    }
+  }
+  console.error('public stats fetch failed', lastError);
+  throw new Error('NETWORK');
+}
+
 async function fetchBootstrap(month: string): Promise<BootstrapResponse> {
   try {
     return await fetchApi<BootstrapResponse>(`/api/bootstrap?month=${encodeURIComponent(month)}`);
@@ -297,6 +338,7 @@ async function fetchBootstrap(month: string): Promise<BootstrapResponse> {
 }
 
 export const api = {
+  getPublicStats: fetchPublicStats,
   getBootstrap: fetchBootstrap,
   getMe: () => fetchApi<MeResponse>('/api/me'),
   getLastGame: () => fetchApi<LastGameData | null>('/api/last-game'),

@@ -23,7 +23,9 @@ function formatMonthLabel(month: string): string {
 }
 
 export default function MonthStats({ onSelectPlayer }: Props) {
-  const { month, monthStats, setMonth, state } = useStats();
+  const { month, monthStats, setMonth, state, availableMonths } = useStats();
+  const monthChoices =
+    availableMonths.length > 0 ? availableMonths : monthOptions();
 
   if (state === 'loading' && monthStats === undefined) {
     return (
@@ -42,7 +44,7 @@ export default function MonthStats({ onSelectPlayer }: Props) {
         value={month}
         onChange={(e) => setMonth(e.target.value)}
       >
-        {monthOptions().map((m) => (
+        {monthChoices.map((m) => (
           <option key={m} value={m}>
             {formatMonthLabel(m)}
           </option>
