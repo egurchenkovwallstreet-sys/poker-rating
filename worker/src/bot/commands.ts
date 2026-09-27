@@ -160,7 +160,20 @@ export function createBot(env: Env): Bot {
       await ctx.reply('Сначала зарегистрируйтесь — кнопка «Регистрация» внизу.');
       return;
     }
-    await ctx.reply('👇 Статистика в Mini App:', {
+    const summary = await callDo<{
+      ok: boolean;
+      summary: {
+        finishedGames: number;
+        playersInRating: number;
+        lastGamePlayers: number;
+      };
+    }>(env, { action: 'getClubStatsSummary' });
+    const s = summary.summary;
+    const dbLine =
+      s.finishedGames > 0
+        ? `В базе: ${s.finishedGames} завершённых игр, ${s.playersInRating} игроков в рейтинге.\nПоследняя игра: ${s.lastGamePlayers} участников.\n\n`
+        : '⚠️ В базе пока нет завершённых игр. Админ: /seeddemo или введите результаты игры.\n\n';
+    await ctx.reply(`${dbLine}👇 Откройте Mini App:`, {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
     });
   });
@@ -272,8 +285,14 @@ export function createBot(env: Env): Bot {
         res.games > 0
           ? '✅ Тестовые данные добавлены'
           : '❌ Игры не созданы — см. ошибки ниже';
+      const summary = await callDo<{
+        ok: boolean;
+        summary: { finishedGames: number; playersInRating: number; lastGamePlayers: number };
+      }>(env, { action: 'getClubStatsSummary' });
+      const sum = summary.summary;
+      const verifyLine = `\n\n📊 Сейчас в базе: ${sum.finishedGames} игр, рейтинг: ${sum.playersInRating} игроков, последняя: ${sum.lastGamePlayers} чел.`;
       await ctx.reply(
-        `${head}\n\nDemo-игроки (рейтинг в таблицах):\n${list}\n\nЗавершённых игр: ${res.games}${errLine}${adminLine}\n\n📊 Статистика → «Открыть статистику».`,
+        `${head}\n\nDemo-игроки (рейтинг в таблицах):\n${list}\n\nЗавершённых игр (этот seed): ${res.games}${verifyLine}${errLine}${adminLine}\n\n📊 Статистика → «Открыть статистику».`,
       );
     } catch (e) {
       await ctx.reply(`❌ ${e}`);

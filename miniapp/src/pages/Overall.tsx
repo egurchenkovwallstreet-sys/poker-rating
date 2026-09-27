@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, formatProfit, profitClass, type OverallStat } from '../api/client';
+import { api, apiErrorMessage, formatProfit, profitClass, type OverallStat } from '../api/client';
 import Loading from '../components/Loading';
 import ErrorState from '../components/ErrorState';
 import PlayerName from '../components/PlayerName';
@@ -18,9 +18,10 @@ export default function Overall({ onSelectPlayer }: Props) {
     api
       .getOverall()
       .then((res) => setStats(res.stats))
-      .catch((e: unknown) =>
-        setError(e instanceof Error ? e.message : 'Не удалось загрузить данные'),
-      );
+      .catch((e: unknown) => {
+        const code = e instanceof Error ? e.message : '';
+        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
+      });
   };
 
   useEffect(load, []);

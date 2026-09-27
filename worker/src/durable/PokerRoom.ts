@@ -99,6 +99,8 @@ export class PokerRoom implements DurableObject {
           const data = db.getLastGame(this.sql);
           return json({ ok: true, data });
         }
+        case 'getClubStatsSummary':
+          return json({ ok: true, summary: db.getClubStatsSummary(this.sql) });
         case 'getMonthStats':
           return json({ ok: true, stats: db.getMonthStats(this.sql, body.month) });
         case 'getOverall':

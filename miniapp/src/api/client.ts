@@ -135,7 +135,18 @@ export function apiErrorMessage(code: string): string {
   }
 }
 
+export interface MeResponse {
+  userId: number;
+  isAdmin: boolean;
+  club: {
+    finishedGames: number;
+    playersInRating: number;
+    lastGamePlayers: number;
+  };
+}
+
 export const api = {
+  getMe: () => fetchApi<MeResponse>('/api/me'),
   getLastGame: () => fetchApi<LastGameData | null>('/api/last-game'),
   getMonthStats: (month: string) =>
     fetchApi<{ month: string; stats: MonthStat[] }>(`/api/month?month=${month}`),

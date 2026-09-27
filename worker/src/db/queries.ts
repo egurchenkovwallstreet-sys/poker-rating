@@ -303,11 +303,44 @@ export function getGameWithResults(sql: SqlStorage, gameId: number): GameWithRes
 }
 
 export function getLastGame(sql: SqlStorage): GameWithResults | null {
-  const game = sql
-    .exec("SELECT * FROM games WHERE status = 'finished' ORDER BY date DESC LIMIT 1")
-    .one();
+  const game = firstRow<Game>(
+    sql,
+    `SELECT g.* FROM games g
+     WHERE g.status = 'finished'
+       AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)
+     ORDER BY g.date DESC
+     LIMIT 1`,
+  );
   if (!game) return null;
-  return getGameWithResults(sql, (game as unknown as Game).id);
+  return getGameWithResults(sql, game.id);
+}
+
+export function getClubStatsSummary(sql: SqlStorage): {
+  finishedGames: number;
+  playersInRating: number;
+  lastGameId: number | null;
+  lastGamePlayers: number;
+} {
+  const finishedGames =
+    firstRow<{ c: number }>(
+      sql,
+      "SELECT COUNT(*) as c FROM games WHERE status = 'finished'",
+    )?.c ?? 0;
+  const playersInRating =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(DISTINCT gr.player_id) as c
+       FROM game_results gr
+       JOIN games g ON g.id = gr.game_id
+       WHERE g.status = 'finished'`,
+    )?.c ?? 0;
+  const last = getLastGame(sql);
+  return {
+    finishedGames,
+    playersInRating,
+    lastGameId: last?.game.id ?? null,
+    lastGamePlayers: last?.results.length ?? 0,
+  };
 }
 
 export function listDraftGames(sql: SqlStorage): Game[] {

@@ -42,7 +42,19 @@ stats.use('*', async (c, next) => {
 async function meHandler(c: Context<ApiEnv>) {
   const auth = c.get('auth');
   const admins = parseAdminIds(c.env.ADMIN_IDS);
-  return c.json({ userId: auth.userId, isAdmin: isAdmin(auth.userId, admins) });
+  const summaryRes = await callDo<{
+    ok: boolean;
+    summary: {
+      finishedGames: number;
+      playersInRating: number;
+      lastGamePlayers: number;
+    };
+  }>(c.env, { action: 'getClubStatsSummary' });
+  return c.json({
+    userId: auth.userId,
+    isAdmin: isAdmin(auth.userId, admins),
+    club: summaryRes.summary,
+  });
 }
 
 async function lastGameHandler(c: Context<ApiEnv>) {
