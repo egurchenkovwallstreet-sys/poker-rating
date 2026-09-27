@@ -1,3 +1,4 @@
+import { parseAdminIds } from '../api/auth';
 import { SCHEMA_SQL } from '../db/schema';
 import * as announce from '../db/game-announce';
 import * as db from '../db/queries';
@@ -7,8 +8,12 @@ export class PokerRoom implements DurableObject {
   private sql: SqlStorage;
   private initialized = false;
 
-  constructor(private state: DurableObjectState, _env: Env) {
+  constructor(private state: DurableObjectState, private env: Env) {
     this.sql = state.storage.sql;
+  }
+
+  private defaultReseedAdminId(): number | undefined {
+    return parseAdminIds(this.env.ADMIN_IDS)[0];
   }
 
   private async ensureInit(): Promise<void> {
@@ -106,8 +111,10 @@ export class PokerRoom implements DurableObject {
           const data = db.getLastGame(this.sql);
           return json({ ok: true, data });
         }
-        case 'getClubStatsSummary':
+        case 'getClubStatsSummary': {
+          db.autoRepairStatsIfBroken(this.sql, this.defaultReseedAdminId());
           return json({ ok: true, summary: db.getClubStatsSummary(this.sql) });
+        }
         case 'getStatsDiagnostics':
           return json({ ok: true, diagnostics: db.getStatsDiagnostics(this.sql) });
         case 'getMonthStats':
@@ -119,7 +126,7 @@ export class PokerRoom implements DurableObject {
           return json({ ok: true, bundle });
         }
         case 'getPublicStatsSnapshot': {
-          const snapshot = db.getPublicStatsSnapshot(this.sql);
+          const snapshot = db.getPublicStatsSnapshot(this.sql, this.defaultReseedAdminId());
           return json({ ok: true, snapshot });
         }
         case 'refreshStatsSnapshot':

@@ -12,6 +12,7 @@ import { formatDate, formatProfit, profitClass, type PlayerProfile } from '../ap
 import { useStats } from '../context/StatsContext';
 import Loading from '../components/Loading';
 import ErrorState from '../components/ErrorState';
+import PlayerName from '../components/PlayerName';
 
 interface Props {
   playerId: number | null;
@@ -32,7 +33,7 @@ export default function Player({ playerId, onSelectPlayer }: Props) {
         return;
       }
       setProfile(undefined);
-      setError('Профиль не найден в снимке. Обновите статистику после следующей игры.');
+      setError('Профиль не найден в снимке. Нажмите «Повторить» или откройте Mini App позже.');
     } else {
       setProfile(undefined);
       setError(null);
@@ -45,11 +46,27 @@ export default function Player({ playerId, onSelectPlayer }: Props) {
     if (statsError && stats.length === 0) {
       return <ErrorState message={statsError} onRetry={reload} />;
     }
+    if (stats.length === 0) {
+      return (
+        <div className="page-content">
+          <div className="card text-center text-tg-hint">Список игроков пуст</div>
+        </div>
+      );
+    }
     return (
       <div className="page-content">
-        <div className="card text-center text-tg-hint">
-          Выберите игрока в таблице рейтинга или последней игры
-        </div>
+        <div className="text-sm text-tg-hint mb-3 px-1">Выберите игрока:</div>
+        {stats.map((s) => (
+          <div
+            key={s.player_id}
+            className="card mb-2 flex justify-between items-center py-2.5 px-3"
+          >
+            <PlayerName name={s.name} playerId={s.player_id} onSelect={onSelectPlayer} />
+            <span className={`text-sm font-medium ${profitClass(s.total_profit)}`}>
+              {formatProfit(s.total_profit)}
+            </span>
+          </div>
+        ))}
       </div>
     );
   }
@@ -113,7 +130,7 @@ export default function Player({ playerId, onSelectPlayer }: Props) {
         className="w-full mt-4 py-2 text-sm text-tg-link"
         onClick={() => onSelectPlayer(0)}
       >
-        ← К рейтингу
+        ← К списку игроков
       </button>
     </div>
   );

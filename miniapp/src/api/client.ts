@@ -250,6 +250,8 @@ export function apiErrorMessage(code: string): string {
       return 'Сессия Telegram устарела. Закройте Mini App (×) и откройте снова из бота.';
     case 'API_404':
       return 'Сервер бота устарел — нужен deploy Worker.';
+    case 'API_EMPTY':
+      return 'Сервер вернул пустой рейтинг. Админ: /refreshstats в боте.';
     default:
       return 'Не удалось загрузить данные';
   }
@@ -304,7 +306,14 @@ export async function fetchPublicStats(): Promise<PublicStatsSnapshot> {
       });
       if (res.status === 503 && attempt < PUBLIC_STATS_ATTEMPTS - 1) continue;
       if (!res.ok) throw new Error(`API_${res.status}`);
-      return (await res.json()) as PublicStatsSnapshot;
+      const data = (await res.json()) as PublicStatsSnapshot;
+      if (
+        (!Array.isArray(data.overall) || data.overall.length === 0) &&
+        (data.club?.finishedGames ?? 0) > 0
+      ) {
+        throw new Error('API_EMPTY');
+      }
+      return data;
     } catch (e) {
       lastError = e;
       if (e instanceof Error && e.message.startsWith('API_')) throw e;

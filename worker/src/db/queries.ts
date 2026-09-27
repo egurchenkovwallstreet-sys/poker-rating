@@ -391,6 +391,13 @@ export function finishGame(sql: SqlStorage, gameId: number): { ok: true } | { ok
   if (!game) return { ok: false, error: 'Игра не найдена' };
   if ((game as unknown as Game).status === 'finished') return { ok: false, error: 'Игра уже завершена' };
 
+  const resultCount =
+    firstRow<{ c: number }>(sql, 'SELECT COUNT(*) as c FROM game_results WHERE game_id = ?', gameId)?.c ??
+    0;
+  if (resultCount < 2) {
+    return { ok: false, error: 'Нет результатов игроков — внесите buy-in/payout перед завершением' };
+  }
+
   const total = getGameProfitSum(sql, gameId);
   if (total !== 0) {
     return { ok: false, error: `Сумма profit должна быть 0, сейчас: ${total}` };
@@ -543,13 +550,64 @@ export function getClubStatsSummary(sql: SqlStorage): {
     )?.c ?? 0;
   const overall = getOverall(sql);
   const last = getLastGame(sql);
+  if (overall.length > 0) {
+    return {
+      finishedGames,
+      finishedGamesInStats,
+      playersInRating: overall.length,
+      lastGameId: last?.game.id ?? null,
+      lastGamePlayers: last?.results.length ?? 0,
+    };
+  }
+  const cached = readPersistedStatsSnapshot(sql);
+  if (cached && cached.overall.length > 0) {
+    return {
+      finishedGames: cached.club.finishedGames,
+      finishedGamesInStats: finishedGamesInStats || cached.club.finishedGames,
+      playersInRating: cached.club.playersInRating,
+      lastGameId: cached.lastGame?.game.id ?? null,
+      lastGamePlayers: cached.club.lastGamePlayers,
+    };
+  }
   return {
     finishedGames,
     finishedGamesInStats,
-    playersInRating: overall.length,
+    playersInRating: 0,
     lastGameId: last?.game.id ?? null,
     lastGamePlayers: last?.results.length ?? 0,
   };
+}
+
+/** Починка «игры есть, рейтинг пуст» (миграция DROP games, пустой finishGame). */
+export function autoRepairStatsIfBroken(sql: SqlStorage, reseedBy?: number): boolean {
+  if (getOverall(sql).length > 0) return false;
+
+  const finishedGames =
+    firstRow<{ c: number }>(sql, "SELECT COUNT(*) as c FROM games WHERE status = 'finished'")?.c ?? 0;
+  if (finishedGames === 0) return false;
+
+  deleteFinishedGamesWithoutResults(sql);
+  repairFinishedGameDates(sql);
+  if (getOverall(sql).length > 0) {
+    refreshStatsSnapshot(sql);
+    return true;
+  }
+
+  const gamesWithResults =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(*) as c FROM games g
+       WHERE g.status = 'finished'
+         AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)`,
+    )?.c ?? 0;
+
+  if (gamesWithResults === 0 && reseedBy != null) {
+    repairClubStatsData(sql, reseedBy);
+    return true;
+  }
+
+  refreshStatsSnapshot(sql);
+  return gamesWithResults > 0;
 }
 
 /** Один round-trip к DO: вся статистика для Mini App (меньше таймаутов при нескольких пользователях). */
@@ -687,11 +745,15 @@ function persistStatsSnapshot(sql: SqlStorage, payload: PublicStatsSnapshot): vo
 }
 
 /** Mini App: только чтение. Не удаляем игры и не затираем снимок пустым ответом. */
-export function getPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
+export function getPublicStatsSnapshot(sql: SqlStorage, autoReseedBy?: number): PublicStatsSnapshot {
   migrateGamesTable(sql);
   const cached = readPersistedStatsSnapshot(sql);
   if (cached && Array.isArray(cached.overall) && cached.overall.length > 0) {
     return cached;
+  }
+
+  if (autoReseedBy != null) {
+    autoRepairStatsIfBroken(sql, autoReseedBy);
   }
 
   repairFinishedGameDates(sql);

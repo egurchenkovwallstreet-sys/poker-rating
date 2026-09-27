@@ -171,14 +171,15 @@ export function createBot(env: Env): Bot {
       };
     }>(env, { action: 'getClubStatsSummary' });
     let s = summary.summary;
-    if (s.finishedGames > 0 && s.playersInRating === 0 && checkAdmin(ctx.from!.id)) {
+    if (s.finishedGames > 0 && s.playersInRating === 0) {
+      const reseedBy = admins[0] ?? ctx.from!.id;
       const repair = await callDo<{
         ok: boolean;
         summary: typeof s;
         orphansRemoved: number;
         reseeded: boolean;
         demoGames: number;
-      }>(env, { action: 'repairAndRefreshStats', createdBy: ctx.from!.id });
+      }>(env, { action: 'repairAndRefreshStats', createdBy: reseedBy });
       s = repair.summary;
     }
     let dbLine =
