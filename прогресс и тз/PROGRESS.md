@@ -1,6 +1,6 @@
 # Прогресс: Telegram Mini App «Покерный рейтинг»
 
-Дата обновления: **2026-09-27** (вечер, фиксация UX бота + handoff на тестовую статистику)
+Дата обновления: **2026-09-27** (поздний вечер — **статистика работает у всех участников**, проверено владельцем)
 
 ## Цель
 
@@ -38,7 +38,7 @@
 
 - Account ID: `b9063e87381f63acf6e086468d2d86de`
 - Subdomain: `e-gurchenkov-wallstreet.workers.dev`
-- Последний деплой worker (2026-09-27): Version ID `a0521245-40c1-4218-93ea-9ee94afc8e39`
+- Последний деплой worker (2026-09-27): Version ID `e812b2ef-8451-40fd-9738-b06566a5d724`
 
 ### wrangler.toml (актуально)
 
@@ -87,11 +87,35 @@
 - Demo: `/seeddemo`, кнопка «🧪 Тестовые данные» → `seedDemo` в `queries.ts` (6 игроков, 4 игры)
 - Git (примеры): `96733c6`, `04d7ac1`, `8e9d055`; worker deploy `a0521245-40c1-4218-93ea-9ee94afc8e39`
 
-### Тестовая статистика (важно для следующего чата)
+### Статистика Mini App + бот (✅ проверено 2026-09-27)
 
-- Demo-игроки в seed **без** `telegram_id` — попадают в **общие таблицы** (Overall / Month / Last game)
-- Зарегистрированный пользователь в **Profile** видит **свои** игры; если он не участвовал в demo-играх — профиль может быть пустым
-- Следующий шаг: проверить все 4 вкладки Mini App после `/seeddemo`, при необходимости связать demo с тестовым Telegram-профилем или расширить seed/API
+**Поведение для всех (админ и участник):**
+
+- Mini App грузит **`GET /api/public/stats`** (без initData) — один **общий снимок клуба** для всех.
+- Кнопка **📊 Статистика** → текст из БД + inline **«Открыть статистику»**.
+- **30 demo-игр** с результатами (`DEMO_FINISHED_GAMES_TARGET`, `/seeddemo`, `/refreshstats`, автопочинка) — до явного `/cleardemo`.
+
+**Ключевые файлы:**
+
+| Что | Где |
+|-----|-----|
+| Публичный снимок + кэш `stats_snapshot` | `worker/src/db/queries.ts` → `getPublicStatsSnapshot`, `autoRepairStatsIfBroken` |
+| API | `worker/src/index.ts` → `/api/public/stats` |
+| DO | `worker/src/durable/PokerRoom.ts` |
+| Клиент + кэш session/localStorage | `miniapp/src/context/StatsContext.tsx`, `miniapp/src/api/client.ts` |
+| Кнопка «Статистика» (repair для всех) | `worker/src/bot/commands.ts` |
+
+**Git / deploy (рабочая точка):** commit `25fa05f`, worker `e812b2ef-8451-40fd-9738-b06566a5d724`.
+
+**Известная поломка (не повторять):** в БД были **завершённые игры без `game_results`** (миграция `DROP games`, или `finishGame` с 0 строк). Симптом: «30 игр, рейтинг 0», пустой Mini App.
+
+**Исправления (держать в голове при доработках):**
+
+1. `finishGame` — **минимум 2** строки в `game_results`, иначе ошибка.
+2. `autoRepairStatsIfBroken` — при пустом рейтинге: удалить «пустые» finished-игры, починить даты; если результатов нет — **re-seed 30 demo** (от первого ID из `ADMIN_IDS`).
+3. Автопочинка на **`getPublicStatsSnapshot`** и **`getClubStatsSummary`** — **для всех**, не только админ.
+4. Не затирать хороший `stats_snapshot` пустым live-ответом (`refreshStatsSnapshot` / `getPublicStatsSnapshot`).
+5. Demo-игроки без `telegram_id` — в Overall/Month/Last; **Profile** — игры зарегистрированного (admin может попасть в seed roster).
 
 ---
 
@@ -120,7 +144,7 @@
 |---------|--------|
 | 4 вкладки, таблицы, график профиля | ✅ |
 | Открытие из бота, initData, API | ✅ |
-| **Тестовая статистика для проверки UI** (seed + отображение, наполнение экранов) | 🔄 **следующий фокус** |
+| **Тестовая статистика** (30 demo, public snapshot, участники) | ✅ проверено владельцем 2026-09-27 |
 | UI-редизайн, статусы, анонсы в app | ❌ |
 
 ---
@@ -168,10 +192,9 @@ npm run build
 
 ## Следующие приоритеты
 
-1. **Тестовая статистика в Mini App:** убедиться, что `/seeddemo` даёт осмысленные данные на всех вкладках; при необходимости доработать seed или UI для демо.
-2. Правка результатов + голосование (>50%).
-3. Mini App: главная, рейтинг с аватарами.
-4. E2E: register → announce → RSVP → start → results → Mini App.
-5. (Позже) статусы-шутки.
+1. Правка результатов + голосование (>50%).
+2. Mini App: главная, рейтинг с аватарами, UI-редизайн.
+3. E2E: register → announce → RSVP → start → results → Mini App (реальные игры, не только demo).
+4. (Позже) статусы-шутки.
 
 Промпт для нового чата: **`PROMPT-NEW-CHAT.md`**
