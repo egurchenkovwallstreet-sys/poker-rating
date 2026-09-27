@@ -15,6 +15,32 @@ function readInitDataFromUrl(): string {
 
 const INIT_DATA_STORAGE_KEY = 'poker_rating_tg_init_data';
 
+function readPersistedInitData(): string {
+  try {
+    return sessionStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
+function writePersistedInitData(data: string): void {
+  try {
+    sessionStorage.setItem(INIT_DATA_STORAGE_KEY, data);
+    localStorage.setItem(INIT_DATA_STORAGE_KEY, data);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearPersistedInitData(): void {
+  try {
+    sessionStorage.removeItem(INIT_DATA_STORAGE_KEY);
+    localStorage.removeItem(INIT_DATA_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** После первого успешного чтения не теряем initData (вкладки, обновление страницы в Telegram). */
 let cachedInitData = '';
 
@@ -22,20 +48,21 @@ function persistInitData(data: string): void {
   const trimmed = data.trim();
   if (!trimmed) return;
   cachedInitData = trimmed;
-  try {
-    sessionStorage.setItem(INIT_DATA_STORAGE_KEY, trimmed);
-  } catch {
-    /* private mode / quota */
-  }
+  writePersistedInitData(trimmed);
 }
 
 function readStoredInitData(): string {
   if (cachedInitData) return cachedInitData;
+  const fromSession = readPersistedInitData();
+  if (fromSession) {
+    cachedInitData = fromSession;
+    return fromSession;
+  }
   try {
-    const stored = sessionStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
-    if (stored) {
-      cachedInitData = stored;
-      return stored;
+    const fromLocal = localStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
+    if (fromLocal) {
+      cachedInitData = fromLocal;
+      return fromLocal;
     }
   } catch {
     /* ignore */
@@ -107,11 +134,7 @@ async function fetchApi<T>(path: string): Promise<T> {
   if (!res.ok) {
     if (res.status === 401) {
       cachedInitData = '';
-      try {
-        sessionStorage.removeItem(INIT_DATA_STORAGE_KEY);
-      } catch {
-        /* ignore */
-      }
+      clearPersistedInitData();
     }
     throw new Error(`API_${res.status}`);
   }

@@ -30,6 +30,10 @@ async function readInitData(c: Context<ApiEnv>): Promise<string> {
 }
 
 stats.use('*', async (c, next) => {
+  if (c.req.method === 'OPTIONS') {
+    await next();
+    return;
+  }
   const initData = await readInitData(c);
   const auth = validateInitData(initData, c.env.BOT_TOKEN);
   if (!auth) {
@@ -64,16 +68,19 @@ async function lastGameHandler(c: Context<ApiEnv>) {
 
 async function monthHandler(c: Context<ApiEnv>) {
   const month = c.req.query('month') || currentMonth();
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    return c.json({ error: 'Invalid month' }, 400);
+  }
   const result = await callDo<{ ok: boolean; stats: unknown }>(c.env, {
     action: 'getMonthStats',
     month,
   });
-  return c.json({ month, stats: result.stats });
+  return c.json({ month, stats: Array.isArray(result.stats) ? result.stats : [] });
 }
 
 async function overallHandler(c: Context<ApiEnv>) {
   const result = await callDo<{ ok: boolean; stats: unknown }>(c.env, { action: 'getOverall' });
-  return c.json({ stats: result.stats });
+  return c.json({ stats: Array.isArray(result.stats) ? result.stats : [] });
 }
 
 async function playerHandler(c: Context<ApiEnv>) {

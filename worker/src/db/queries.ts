@@ -1,21 +1,6 @@
 import type { SqlStorage } from '@cloudflare/workers-types';
 import { firstRow } from './query-helpers';
-
-/** Окно статистики в UI и рейтингах (~2 года; старше не удаляем, только не показываем). */
-const STATS_RETENTION_MS = Math.round(2 * 365.25 * 24 * 60 * 60 * 1000);
-
-function statsSinceTimestamp(): number {
-  return Date.now() - STATS_RETENTION_MS;
-}
-
-/** Границы календарного месяца в UTC (совпадает с датами игр в seed). */
-function monthRangeUtc(month: string): { start: number; end: number } {
-  const [year, mon] = month.split('-').map(Number);
-  return {
-    start: Date.UTC(year, mon - 1, 1),
-    end: Date.UTC(year, mon, 1),
-  };
-}
+import { demoGameTimestamps, monthGameDateFilter, statsSinceMs } from './stats-time';
 import type {
   Game,
   GameResult,
@@ -299,7 +284,7 @@ export function deleteGame(sql: SqlStorage, gameId: number): boolean {
 }
 
 export function getGameWithResults(sql: SqlStorage, gameId: number): GameWithResults | null {
-  const game = sql.exec('SELECT * FROM games WHERE id = ?', gameId).one();
+  const game = firstRow<Game>(sql, 'SELECT * FROM games WHERE id = ?', gameId);
   if (!game) return null;
 
   const results = [
@@ -319,7 +304,7 @@ export function getGameWithResults(sql: SqlStorage, gameId: number): GameWithRes
 }
 
 export function getLastGame(sql: SqlStorage): GameWithResults | null {
-  const since = statsSinceTimestamp();
+  const since = statsSinceMs();
   const game = firstRow<Game>(
     sql,
     `SELECT g.* FROM games g
@@ -341,7 +326,7 @@ export function getClubStatsSummary(sql: SqlStorage): {
   lastGameId: number | null;
   lastGamePlayers: number;
 } {
-  const since = statsSinceTimestamp();
+  const since = statsSinceMs();
   const finishedGames =
     firstRow<{ c: number }>(
       sql,
@@ -379,9 +364,14 @@ export function listFinishedGames(sql: SqlStorage, limit = 20): Game[] {
 }
 
 export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
-  const { start, end } = monthRangeUtc(month);
-  const since = statsSinceTimestamp();
-  const from = Math.max(start, since);
+  let range: { fromInclusive: number; toExclusive: number };
+  try {
+    const r = monthGameDateFilter(month);
+    if (!r) return [];
+    range = r;
+  } catch {
+    return [];
+  }
 
   const rows = [
     ...sql
@@ -400,8 +390,8 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
          WHERE g.status = 'finished' AND g.date >= ? AND g.date < ?
          GROUP BY p.id, p.name
          ORDER BY total_profit DESC`,
-        from,
-        end,
+        range.fromInclusive,
+        range.toExclusive,
       )
       .toArray(),
   ] as Array<{
@@ -421,6 +411,7 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
 }
 
 export function getOverall(sql: SqlStorage): OverallStatRow[] {
+  const since = statsSinceMs();
   const rows = [
     ...sql
       .exec(
@@ -437,7 +428,7 @@ export function getOverall(sql: SqlStorage): OverallStatRow[] {
          WHERE g.status = 'finished' AND g.date >= ?
          GROUP BY p.id, p.name
          ORDER BY total_profit DESC`,
-        statsSinceTimestamp(),
+        since,
       )
       .toArray(),
   ] as Array<{
@@ -458,11 +449,11 @@ export function getOverall(sql: SqlStorage): OverallStatRow[] {
     wins: r.wins,
     winrate: r.games_count > 0 ? Math.round((r.wins / r.games_count) * 100) : 0,
     roi: r.total_buyin > 0 ? Math.round((r.total_profit / r.total_buyin) * 100) : 0,
-    streak: computeStreak(sql, r.player_id),
+    streak: computeStreak(sql, r.player_id, since),
   }));
 }
 
-function computeStreak(sql: SqlStorage, playerId: number): number {
+function computeStreak(sql: SqlStorage, playerId: number, since: number): number {
   const profits = [
     ...sql
       .exec(
@@ -473,7 +464,7 @@ function computeStreak(sql: SqlStorage, playerId: number): number {
          ORDER BY g.date DESC
          LIMIT 20`,
         playerId,
-        statsSinceTimestamp(),
+        since,
       )
       .toArray(),
   ] as Array<{ profit: number }>;
@@ -494,18 +485,17 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
   const player = getPlayerById(sql, playerId);
   if (!player) return null;
 
-  const stats = sql
-    .exec(
-      `SELECT COUNT(DISTINCT g.id) as games_count, COALESCE(SUM(gr.profit), 0) as total_profit
-       FROM game_results gr
-       JOIN games g ON g.id = gr.game_id
-       WHERE gr.player_id = ? AND g.status = 'finished' AND g.date >= ?`,
-      playerId,
-      statsSinceTimestamp(),
-    )
-    .one() as { games_count: number; total_profit: number };
-
-  const since = statsSinceTimestamp();
+  const since = statsSinceMs();
+  const statsRow = firstRow<{ games_count: number; total_profit: number }>(
+    sql,
+    `SELECT COUNT(DISTINCT g.id) as games_count, COALESCE(SUM(gr.profit), 0) as total_profit
+     FROM game_results gr
+     JOIN games g ON g.id = gr.game_id
+     WHERE gr.player_id = ? AND g.status = 'finished' AND g.date >= ?`,
+    playerId,
+    since,
+  );
+  const stats = statsRow ?? { games_count: 0, total_profit: 0 };
   const gameProfits = [
     ...sql
       .exec(
@@ -588,21 +578,6 @@ export function setSession(
 
 export function clearSession(sql: SqlStorage, userId: number): void {
   sql.exec('DELETE FROM bot_sessions WHERE user_id = ?', userId);
-}
-
-/** Даты demo-игр в текущем календарном месяце (для вкладки «Месяц»). */
-/** По одной demo-игре в разные месяцы (для вкладки «Месяц»); в «Общий» — сумма за 2 года. */
-function demoGameTimestamps(count: number): number[] {
-  const now = new Date();
-  const timestamps: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const monthsAgo = count - 1 - i;
-    const d = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsAgo, 15, 20, 0, 0),
-    );
-    timestamps.push(d.getTime());
-  }
-  return timestamps;
 }
 
 /** Тестовые игроки (без telegram_id) и завершённые игры с результатами (Σ profit = 0). */
