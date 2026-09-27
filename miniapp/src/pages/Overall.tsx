@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api, apiErrorMessage, formatProfit, profitClass, type OverallStat } from '../api/client';
+import { formatProfit, profitClass } from '../api/client';
+import { useStats } from '../context/StatsContext';
 import Loading from '../components/Loading';
 import ErrorState from '../components/ErrorState';
 import PlayerName from '../components/PlayerName';
@@ -9,25 +9,14 @@ interface Props {
 }
 
 export default function Overall({ onSelectPlayer }: Props) {
-  const [stats, setStats] = useState<OverallStat[] | undefined>(undefined);
-  const [error, setError] = useState<string | null>(null);
+  const { overall, error, state, reload } = useStats();
 
-  const load = () => {
-    setError(null);
-    setStats(undefined);
-    api
-      .getOverall()
-      .then((res) => setStats(res.stats))
-      .catch((e: unknown) => {
-        const code = e instanceof Error ? e.message : '';
-        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
-      });
-  };
+  if (error && overall === undefined) {
+    return <ErrorState message={error} onRetry={reload} />;
+  }
+  if (state === 'loading' && overall === undefined) return <Loading />;
 
-  useEffect(load, []);
-
-  if (error) return <ErrorState message={error} onRetry={load} />;
-  if (stats === undefined) return <Loading />;
+  const stats = overall ?? [];
 
   if (stats.length === 0) {
     return (
@@ -63,7 +52,7 @@ export default function Overall({ onSelectPlayer }: Props) {
         </div>
       ))}
       <div className="text-xs text-tg-hint mt-4 text-center">
-        Серия: положительная/отрицательная подряд (последние игры)
+        Сумма +/− по всем завершённым играм, где игрок участвовал
       </div>
     </div>
   );

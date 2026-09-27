@@ -8,7 +8,8 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts';
-import { api, formatDate, formatProfit, profitClass, type OverallStat, type PlayerProfile } from '../api/client';
+import { api, apiErrorMessage, formatDate, formatProfit, profitClass, type PlayerProfile } from '../api/client';
+import { useStats } from '../context/StatsContext';
 import Loading from '../components/Loading';
 import ErrorState from '../components/ErrorState';
 
@@ -18,8 +19,8 @@ interface Props {
 }
 
 export default function Player({ playerId, onSelectPlayer }: Props) {
+  const { overall, state, reload, error: statsError } = useStats();
   const [profile, setProfile] = useState<PlayerProfile | undefined>(undefined);
-  const [players, setPlayers] = useState<OverallStat[] | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -29,31 +30,23 @@ export default function Player({ playerId, onSelectPlayer }: Props) {
       api
         .getPlayer(playerId)
         .then(setProfile)
-        .catch(() => setError('Не удалось загрузить профиль'));
+        .catch((e: unknown) => {
+          const code = e instanceof Error ? e.message : '';
+          setError(code ? apiErrorMessage(code) : 'Не удалось загрузить профиль');
+        });
     } else {
       setProfile(undefined);
-      setPlayers(undefined);
-      api
-        .getOverall()
-        .then((res) => setPlayers(res.stats))
-        .catch(() => setError('Не удалось загрузить список игроков'));
+      setError(null);
     }
   }, [playerId]);
 
   if (playerId === null) {
-    if (error) {
-      return (
-        <ErrorState
-          message={error}
-          onRetry={() => {
-            setError(null);
-            setPlayers(undefined);
-            api.getOverall().then((res) => setPlayers(res.stats)).catch(() => setError('Не удалось загрузить список игроков'));
-          }}
-        />
-      );
+    if (statsError && overall === undefined) {
+      return <ErrorState message={statsError} onRetry={reload} />;
     }
-    if (players === undefined) return <Loading />;
+    if (state === 'loading' && overall === undefined) return <Loading />;
+
+    const players = overall ?? [];
 
     return (
       <div className="page-content">

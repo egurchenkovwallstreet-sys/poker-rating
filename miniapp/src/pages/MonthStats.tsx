@@ -1,7 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api, apiErrorMessage, currentMonth, formatProfit, profitClass, type MonthStat } from '../api/client';
-import Loading from '../components/Loading';
-import ErrorState from '../components/ErrorState';
+import { formatProfit, profitClass } from '../api/client';
+import { useStats } from '../context/StatsContext';
 import PlayerName from '../components/PlayerName';
 
 interface Props {
@@ -11,7 +9,7 @@ interface Props {
 function monthOptions(): string[] {
   const options: string[] = [];
   const now = new Date();
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 24; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     options.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
@@ -25,26 +23,17 @@ function formatMonthLabel(month: string): string {
 }
 
 export default function MonthStats({ onSelectPlayer }: Props) {
-  const [month, setMonth] = useState(currentMonth());
-  const [stats, setStats] = useState<MonthStat[] | undefined>(undefined);
-  const [error, setError] = useState<string | null>(null);
+  const { month, monthStats, setMonth, state } = useStats();
 
-  const load = (m: string) => {
-    setError(null);
-    setStats(undefined);
-    api
-      .getMonthStats(m)
-      .then((res) => setStats(res.stats))
-      .catch((e: unknown) => {
-        const code = e instanceof Error ? e.message : '';
-        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
-      });
-  };
+  if (state === 'loading' && monthStats === undefined) {
+    return (
+      <div className="page-content">
+        <div className="card text-center text-tg-hint">Загрузка…</div>
+      </div>
+    );
+  }
 
-  useEffect(() => load(month), [month]);
-
-  if (error) return <ErrorState message={error} onRetry={() => load(month)} />;
-  if (stats === undefined) return <Loading />;
+  const stats = monthStats ?? [];
 
   return (
     <div className="page-content">

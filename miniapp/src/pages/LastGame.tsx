@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { api, apiErrorMessage, formatDate, formatProfit, profitClass, type LastGameData } from '../api/client';
+import { formatDate, formatProfit, profitClass } from '../api/client';
+import { useStats } from '../context/StatsContext';
 import Loading from '../components/Loading';
 import ErrorState from '../components/ErrorState';
 import PlayerName from '../components/PlayerName';
@@ -9,27 +9,14 @@ interface Props {
 }
 
 export default function LastGame({ onSelectPlayer }: Props) {
-  const [data, setData] = useState<LastGameData | null | undefined>(undefined);
-  const [error, setError] = useState<string | null>(null);
+  const { lastGame, error, state, reload } = useStats();
 
-  const load = () => {
-    setError(null);
-    setData(undefined);
-    api
-      .getLastGame()
-      .then(setData)
-      .catch((e: unknown) => {
-        const code = e instanceof Error ? e.message : '';
-        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
-      });
-  };
+  if (error && lastGame === undefined) {
+    return <ErrorState message={error} onRetry={reload} />;
+  }
+  if (state === 'loading' && lastGame === undefined) return <Loading />;
 
-  useEffect(load, []);
-
-  if (error) return <ErrorState message={error} onRetry={load} />;
-  if (data === undefined) return <Loading />;
-
-  if (!data) {
+  if (!lastGame) {
     return (
       <div className="page-content">
         <div className="card text-center text-tg-hint">Завершённых игр пока нет</div>
@@ -40,7 +27,7 @@ export default function LastGame({ onSelectPlayer }: Props) {
   return (
     <div className="page-content">
       <div className="card">
-        <div className="text-sm text-tg-hint mb-3">📅 {formatDate(data.game.date)}</div>
+        <div className="text-sm text-tg-hint mb-3">📅 {formatDate(lastGame.game.date)}</div>
         <div className="text-xs text-tg-hint grid grid-cols-[24px_1fr_48px_48px_56px] gap-1 mb-2 px-1">
           <span>#</span>
           <span>Игрок</span>
@@ -48,7 +35,7 @@ export default function LastGame({ onSelectPlayer }: Props) {
           <span className="text-right">Стек</span>
           <span className="text-right">+/−</span>
         </div>
-        {data.results.map((r) => (
+        {lastGame.results.map((r) => (
           <div
             key={r.id}
             className="grid grid-cols-[24px_1fr_48px_48px_56px] gap-1 py-2 border-b border-white/10 last:border-0 items-center text-sm"

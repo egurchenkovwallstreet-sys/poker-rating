@@ -13,6 +13,9 @@ function readInitDataFromUrl(): string {
   return q ? decodeURIComponent(q) : '';
 }
 
+/** После первого успешного чтения не теряем initData при переключении вкладок (iOS Telegram). */
+let cachedInitData = '';
+
 function readInitDataSync(): string {
   const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
   const direct = tg?.initData?.trim();
@@ -22,16 +25,23 @@ function readInitDataSync(): string {
 
 /** Telegram иногда отдаёт initData с задержкой после открытия Web App с клавиатуры */
 export async function waitForInitData(timeoutMs = 10000): Promise<string> {
+  if (cachedInitData) return cachedInitData;
+
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
   tg?.ready?.();
 
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const data = readInitDataSync();
-    if (data) return data;
+    if (data) {
+      cachedInitData = data;
+      return data;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
-  return readInitDataSync();
+  const fallback = readInitDataSync();
+  if (fallback) cachedInitData = fallback;
+  return fallback;
 }
 
 async function fetchApi<T>(path: string): Promise<T> {
