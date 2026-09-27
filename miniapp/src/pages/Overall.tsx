@@ -9,7 +9,7 @@ interface Props {
 }
 
 export default function Overall({ onSelectPlayer }: Props) {
-  const { overall, error, state, reload } = useStats();
+  const { overall, error, state, reload, clubFinishedGames } = useStats();
 
   if (error && overall === undefined) {
     return <ErrorState message={error} onRetry={reload} />;
@@ -19,9 +19,16 @@ export default function Overall({ onSelectPlayer }: Props) {
   const stats = overall ?? [];
 
   if (stats.length === 0) {
+    const hint =
+      clubFinishedGames != null && clubFinishedGames > 0
+        ? 'Рейтинг не загрузился. Нажмите «Повторить» или закройте Mini App и откройте снова.'
+        : 'Рейтинг пуст';
     return (
       <div className="page-content">
-        <div className="card text-center text-tg-hint">Рейтинг пуст</div>
+        <div className="card text-center text-tg-hint">{hint}</div>
+        {error && (
+          <div className="card text-center text-sm text-tg-hint mt-2">{error}</div>
+        )}
       </div>
     );
   }

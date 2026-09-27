@@ -26,6 +26,7 @@ interface StatsContextValue {
   monthStats: MonthStat[] | undefined;
   error: string | null;
   state: LoadState;
+  clubFinishedGames: number | null;
   setMonth: (month: string) => void;
   reload: () => void;
 }
@@ -39,9 +40,10 @@ export function StatsProvider({ children }: { children: ReactNode }) {
   const [monthStats, setMonthStats] = useState<MonthStat[] | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<LoadState>('loading');
+  const [clubFinishedGames, setClubFinishedGames] = useState<number | null>(null);
   const loadSeq = useRef(0);
   const monthSeq = useRef(0);
-  const hasLoadedOnce = useRef(false);
+  const hasSuccessfulLoad = useRef(false);
 
   const loadMonth = useCallback(async (m: string) => {
     const seq = ++monthSeq.current;
@@ -54,27 +56,47 @@ export function StatsProvider({ children }: { children: ReactNode }) {
     async (monthKey: string) => {
       const seq = ++loadSeq.current;
       setError(null);
-      if (!hasLoadedOnce.current) {
+      if (!hasSuccessfulLoad.current) {
         setState('loading');
-        setLastGame(undefined);
-        setOverall(undefined);
-        setMonthStats(undefined);
       }
 
       try {
-        const [last, ov] = await Promise.all([api.getLastGame(), api.getOverall()]);
+        const me = await api.getMe();
+        if (seq !== loadSeq.current) return;
+        setClubFinishedGames(me.club.finishedGames);
+
+        const last = await api.getLastGame();
         if (seq !== loadSeq.current) return;
         setLastGame(last);
-        setOverall(Array.isArray(ov.stats) ? ov.stats : []);
+
+        const ov = await api.getOverall();
+        if (seq !== loadSeq.current) return;
+        const stats = Array.isArray(ov.stats) ? ov.stats : [];
+        setOverall(stats);
+
+        if (
+          me.club.finishedGames > 0 &&
+          stats.length === 0 &&
+          me.club.playersInRating > 0
+        ) {
+          throw new Error('API_EMPTY_STATS');
+        }
+
         await loadMonth(monthKey);
         if (seq !== loadSeq.current) return;
-        hasLoadedOnce.current = true;
+        hasSuccessfulLoad.current = true;
         setState('ready');
       } catch (e: unknown) {
         if (seq !== loadSeq.current) return;
         const code = e instanceof Error ? e.message : '';
-        setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
-        if (!hasLoadedOnce.current) {
+        const msg =
+          code === 'API_EMPTY_STATS'
+            ? 'Данные не загрузились (авторизация). Закройте Mini App (×) и откройте снова из бота.'
+            : code
+              ? apiErrorMessage(code)
+              : 'Не удалось загрузить данные';
+        setError(msg);
+        if (!hasSuccessfulLoad.current) {
           setState('error');
         }
       }
@@ -89,13 +111,12 @@ export function StatsProvider({ children }: { children: ReactNode }) {
   const setMonth = useCallback(
     (m: string) => {
       setMonthState(m);
-      if (!monthStats) setMonthStats(undefined);
       loadMonth(m).catch((e: unknown) => {
         const code = e instanceof Error ? e.message : '';
         setError(code ? apiErrorMessage(code) : 'Не удалось загрузить месяц');
       });
     },
-    [loadMonth, monthStats],
+    [loadMonth],
   );
 
   const reload = useCallback(() => {
@@ -110,10 +131,11 @@ export function StatsProvider({ children }: { children: ReactNode }) {
       monthStats,
       error,
       state,
+      clubFinishedGames,
       setMonth,
       reload,
     }),
-    [lastGame, overall, month, monthStats, error, state, setMonth, reload],
+    [lastGame, overall, month, monthStats, error, state, clubFinishedGames, setMonth, reload],
   );
 
   return <StatsContext.Provider value={value}>{children}</StatsContext.Provider>;

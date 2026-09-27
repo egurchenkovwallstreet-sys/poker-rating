@@ -41,6 +41,7 @@ stats.use('*', async (c, next) => {
   }
   c.set('auth', auth);
   await next();
+  c.header('Cache-Control', 'no-store');
 });
 
 async function meHandler(c: Context<ApiEnv>) {

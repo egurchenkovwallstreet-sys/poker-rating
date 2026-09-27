@@ -13,23 +13,23 @@ function readInitDataFromUrl(): string {
   return q ? decodeURIComponent(q) : '';
 }
 
-const INIT_DATA_STORAGE_KEY = 'poker_rating_tg_init_data';
+const INIT_DATA_SESSION_KEY = 'poker_rating_tg_init_data';
 
 let cachedInitData = '';
+/** initData, с которым уже получили 401 — не использовать снова (WebApp может держать старый). */
+const rejectedInitData = new Set<string>();
 
-function writePersistedInitData(data: string): void {
+function writeSessionInitData(data: string): void {
   try {
-    sessionStorage.setItem(INIT_DATA_STORAGE_KEY, data);
-    localStorage.setItem(INIT_DATA_STORAGE_KEY, data);
+    sessionStorage.setItem(INIT_DATA_SESSION_KEY, data);
   } catch {
     /* ignore */
   }
 }
 
-function clearPersistedInitData(): void {
+function clearSessionInitData(): void {
   try {
-    sessionStorage.removeItem(INIT_DATA_STORAGE_KEY);
-    localStorage.removeItem(INIT_DATA_STORAGE_KEY);
+    sessionStorage.removeItem(INIT_DATA_SESSION_KEY);
   } catch {
     /* ignore */
   }
@@ -37,39 +37,45 @@ function clearPersistedInitData(): void {
 
 function persistInitData(data: string): void {
   const trimmed = data.trim();
-  if (!trimmed) return;
+  if (!trimmed || rejectedInitData.has(trimmed)) return;
   cachedInitData = trimmed;
-  writePersistedInitData(trimmed);
+  writeSessionInitData(trimmed);
 }
 
-/** Свежий initData: сначала Telegram / URL, кэш — только запасной. */
+export function clearInitDataCache(): void {
+  cachedInitData = '';
+  clearSessionInitData();
+}
+
+function isUsableInitData(data: string | undefined | null): data is string {
+  const t = data?.trim();
+  return Boolean(t && !rejectedInitData.has(t));
+}
+
+/** При каждом открытии: сначала URL (Telegram кладёт свежий tgWebAppData), потом WebApp.initData. */
 function readFreshInitDataSync(): string {
-  const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
-  const direct = tg?.initData?.trim();
-  if (direct) {
-    persistInitData(direct);
-    return direct;
-  }
   const fromUrl = readInitDataFromUrl();
-  if (fromUrl) {
+  if (isUsableInitData(fromUrl)) {
     persistInitData(fromUrl);
     return fromUrl;
+  }
+
+  const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
+  const direct = tg?.initData?.trim();
+  if (isUsableInitData(direct)) {
+    persistInitData(direct);
+    return direct;
   }
   return '';
 }
 
-function readStoredInitDataFallback(): string {
-  if (cachedInitData) return cachedInitData;
+function readSessionFallback(): string {
+  if (isUsableInitData(cachedInitData)) return cachedInitData;
   try {
-    const fromSession = sessionStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
-    if (fromSession) {
+    const fromSession = sessionStorage.getItem(INIT_DATA_SESSION_KEY)?.trim();
+    if (isUsableInitData(fromSession)) {
       cachedInitData = fromSession;
       return fromSession;
-    }
-    const fromLocal = localStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
-    if (fromLocal) {
-      cachedInitData = fromLocal;
-      return fromLocal;
     }
   } catch {
     /* ignore */
@@ -77,16 +83,7 @@ function readStoredInitDataFallback(): string {
   return '';
 }
 
-export function clearInitDataCache(): void {
-  cachedInitData = '';
-  clearPersistedInitData();
-}
-
-/**
- * Ждём initData от Telegram при каждом открытии Web App.
- * Ошибка прошлой версии: сразу отдавали localStorage и не читали новый initData.
- */
-export async function waitForInitData(timeoutMs = 10000): Promise<string> {
+export async function waitForInitData(timeoutMs = 15000): Promise<string> {
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
   tg?.ready?.();
 
@@ -97,10 +94,37 @@ export async function waitForInitData(timeoutMs = 10000): Promise<string> {
   while (Date.now() - started < timeoutMs) {
     const data = readFreshInitDataSync();
     if (data) return data;
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 80));
   }
 
-  return readStoredInitDataFallback();
+  return readSessionFallback();
+}
+
+let refreshInitDataPromise: Promise<string> | null = null;
+
+function rejectInitData(data: string): void {
+  const t = data.trim();
+  if (!t) return;
+  rejectedInitData.add(t);
+  if (cachedInitData === t) cachedInitData = '';
+  try {
+    const stored = sessionStorage.getItem(INIT_DATA_SESSION_KEY)?.trim();
+    if (stored === t) clearSessionInitData();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function refreshInitDataAfter401(failed: string): Promise<string> {
+  if (!refreshInitDataPromise) {
+    refreshInitDataPromise = (async () => {
+      rejectInitData(failed);
+      const fresh = await waitForInitData(15000);
+      refreshInitDataPromise = null;
+      return fresh;
+    })();
+  }
+  return refreshInitDataPromise;
 }
 
 async function fetchWithInitData(path: string, initData: string): Promise<Response> {
@@ -112,6 +136,7 @@ async function fetchWithInitData(path: string, initData: string): Promise<Respon
       'X-Telegram-Init-Data': initData,
     },
     body: JSON.stringify({ initData }),
+    cache: 'no-store',
   });
 }
 
@@ -133,14 +158,14 @@ async function fetchApi<T>(path: string): Promise<T> {
   }
 
   if (res.status === 401) {
-    clearInitDataCache();
-    initData = await waitForInitData(8000);
-    if (initData) {
-      try {
-        res = await fetchWithInitData(path, initData);
-      } catch {
-        throw new Error('NETWORK');
-      }
+    initData = await refreshInitDataAfter401(initData);
+    if (!initData) {
+      throw new Error('API_401');
+    }
+    try {
+      res = await fetchWithInitData(path, initData);
+    } catch {
+      throw new Error('NETWORK');
     }
   }
 
