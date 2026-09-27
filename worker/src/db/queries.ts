@@ -101,6 +101,44 @@ export function migrateNormalizeGameDates(sql: SqlStorage): void {
   }
 }
 
+/** Завершённые игры без строк в game_results (после сбойной миграции DROP games). */
+export function deleteFinishedGamesWithoutResults(sql: SqlStorage): number {
+  try {
+    const orphanIds = [
+      ...sql
+        .exec(
+          `SELECT g.id FROM games g
+           WHERE g.status = 'finished'
+             AND NOT EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)`,
+        )
+        .toArray(),
+    ] as Array<{ id: number }>;
+    for (const { id } of orphanIds) {
+      deleteGame(sql, id);
+    }
+    return orphanIds.length;
+  } catch (e) {
+    console.error('deleteFinishedGamesWithoutResults:', e);
+    return 0;
+  }
+}
+
+export function repairClubStatsData(
+  sql: SqlStorage,
+  reseedDemoBy?: number,
+): { orphansRemoved: number; reseeded: boolean } {
+  migrateGamesTable(sql);
+  const orphansRemoved = deleteFinishedGamesWithoutResults(sql);
+  repairFinishedGameDates(sql);
+  let reseeded = false;
+  if (reseedDemoBy != null && getOverall(sql).length === 0) {
+    seedDemo(sql, reseedDemoBy);
+    reseeded = true;
+  }
+  refreshStatsSnapshot(sql);
+  return { orphansRemoved, reseeded };
+}
+
 /** Игры с результатами, но дата вне окна 2 года — подставить created_at (часто после старых seed). */
 export function repairFinishedGameDates(sql: SqlStorage): void {
   migrateNormalizeGameDates(sql);
@@ -626,6 +664,8 @@ export function getPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
     (snap.club.finishedGames > 0 && snap.overall.length === 0 && snap.club.playersInRating === 0);
 
   if (needsRebuild) {
+    deleteFinishedGamesWithoutResults(sql);
+    repairFinishedGameDates(sql);
     refreshStatsSnapshot(sql);
     snap = read();
   }

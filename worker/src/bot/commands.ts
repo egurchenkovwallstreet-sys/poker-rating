@@ -177,8 +177,8 @@ export function createBot(env: Env): Bot {
         : '⚠️ В базе пока нет завершённых игр. Админ: /seeddemo или введите результаты игры.\n\n';
     if (s.finishedGames > 0 && s.playersInRating === 0) {
       dbLine =
-        `⚠️ Игры есть (${s.finishedGames}), но рейтинг пуст (в окне 2 года: ${s.finishedGamesInStats}).\n` +
-        `Админ: /refreshstats — пересчёт таблицы.\n\n`;
+        `⚠️ В базе ${s.finishedGames} игр, но нет результатов (рейтинг пуст).\n` +
+        `Админ: /refreshstats — починит и заново создаст тестовые игры.\n\n`;
     }
     await ctx.reply(`${dbLine}👇 Откройте Mini App:`, {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
@@ -334,13 +334,20 @@ export function createBot(env: Env): Bot {
           playersInRating: number;
           lastGamePlayers: number;
         };
-      }>(env, { action: 'repairAndRefreshStats' });
+        orphansRemoved: number;
+        reseeded: boolean;
+      }>(env, { action: 'repairAndRefreshStats', createdBy: ctx.from!.id });
       const s = res.summary;
+      const extra =
+        res.orphansRemoved > 0
+          ? `\n🧹 Удалено «пустых» игр без результатов: ${res.orphansRemoved}.`
+          : '';
+      const seedLine = res.reseeded ? '\n🧪 Тестовые игры (/seeddemo) созданы заново.' : '';
       await ctx.reply(
         `✅ Статистика пересчитана.\n\n` +
           `Игр: ${s.finishedGames}, в окне 2 года: ${s.finishedGamesInStats}\n` +
           `Игроков в рейтинге: ${s.playersInRating}\n` +
-          `Последняя игра: ${s.lastGamePlayers} чел.\n\n` +
+          `Последняя игра: ${s.lastGamePlayers} чел.${extra}${seedLine}\n\n` +
           `Mini App покажет ту же таблицу у всех участников.`,
       );
     } catch (e) {
