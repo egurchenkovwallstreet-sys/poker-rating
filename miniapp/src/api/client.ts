@@ -278,6 +278,7 @@ export interface PublicStatsSnapshot {
     finishedGames: number;
     playersInRating: number;
     lastGamePlayers: number;
+    testDemoGames?: number;
   };
   lastGame: LastGameData | null;
   overall: OverallStat[];

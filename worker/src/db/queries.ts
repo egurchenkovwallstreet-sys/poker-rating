@@ -5,6 +5,7 @@ import {
   monthGameDateFilter,
   SQL_GAME_DATE_MS,
   SQL_GAME_DATE_MS_GAMES,
+  SQL_GAME_IN_STATS,
   statsSinceMs,
 } from './stats-time';
 import type {
@@ -129,6 +130,19 @@ function migrateGamesTable(sql: SqlStorage): void {
     if (!names.includes('max_players')) {
       sql.exec('ALTER TABLE games ADD COLUMN max_players INTEGER NOT NULL DEFAULT 0');
     }
+    if (!names.includes('is_demo')) {
+      sql.exec('ALTER TABLE games ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0');
+      sql.exec("UPDATE games SET is_demo = 1 WHERE status = 'finished'");
+    } else {
+      const demoCount =
+        firstRow<{ c: number }>(sql, 'SELECT COUNT(*) as c FROM games WHERE is_demo = 1')?.c ?? 0;
+      const finCount =
+        firstRow<{ c: number }>(sql, "SELECT COUNT(*) as c FROM games WHERE status = 'finished'")?.c ??
+        0;
+      if (finCount > 0 && demoCount === 0) {
+        sql.exec("UPDATE games SET is_demo = 1 WHERE status = 'finished'");
+      }
+    }
     const master = firstRow<{ sql: string }>(
       sql,
       "SELECT sql FROM sqlite_master WHERE type='table' AND name='games'",
@@ -241,14 +255,20 @@ export function setPlayerAvatar(sql: SqlStorage, telegramId: number, avatarFileI
   return getPlayerByTelegramId(sql, telegramId)!;
 }
 
-export function createGame(sql: SqlStorage, playerIds: number[], createdBy: number): number {
+export function createGame(
+  sql: SqlStorage,
+  playerIds: number[],
+  createdBy: number,
+  isDemo = false,
+): number {
   const now = Date.now();
   sql.exec(
-    `INSERT INTO games (date, status, created_by, created_at, ticket_price, max_players)
-     VALUES (?, 'draft', ?, ?, 0, 0)`,
+    `INSERT INTO games (date, status, created_by, created_at, ticket_price, max_players, is_demo)
+     VALUES (?, 'draft', ?, ?, 0, 0, ?)`,
     now,
     createdBy,
     now,
+    isDemo ? 1 : 0,
   );
   const game = sql.exec('SELECT id FROM games ORDER BY id DESC LIMIT 1').one() as { id: number };
   for (const playerId of playerIds) {
@@ -366,7 +386,7 @@ export function getLastGame(sql: SqlStorage): GameWithResults | null {
     sql,
     `SELECT g.* FROM games g
      WHERE g.status = 'finished'
-       AND ${SQL_GAME_DATE_MS} >= ?
+       AND ${SQL_GAME_IN_STATS}
        AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)
      ORDER BY ${SQL_GAME_DATE_MS} DESC
      LIMIT 1`,
@@ -418,7 +438,7 @@ export function getStatsDiagnostics(sql: SqlStorage): {
       sql,
       `SELECT COUNT(DISTINCT g.id) as c FROM games g
        JOIN game_results gr ON gr.game_id = g.id
-       WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
+       WHERE g.status = 'finished' AND ${SQL_GAME_IN_STATS}`,
       since,
     )?.c ?? 0;
   const mm = firstRow<{ mn: number | null; mx: number | null }>(
@@ -454,7 +474,7 @@ export function getClubStatsSummary(sql: SqlStorage): {
   const finishedGamesInStats =
     firstRow<{ c: number }>(
       sql,
-      `SELECT COUNT(*) as c FROM games g WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
+      `SELECT COUNT(*) as c FROM games g WHERE g.status = 'finished' AND ${SQL_GAME_IN_STATS}`,
       since,
     )?.c ?? 0;
   const overall = getOverall(sql);
@@ -491,7 +511,7 @@ export function getStatsBundle(
   const finishedGamesInStats =
     firstRow<{ c: number }>(
       sql,
-      `SELECT COUNT(*) as c FROM games g WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
+      `SELECT COUNT(*) as c FROM games g WHERE g.status = 'finished' AND ${SQL_GAME_IN_STATS}`,
       since,
     )?.c ?? 0;
   return {
@@ -522,7 +542,7 @@ function listStatsMonthsWithGames(sql: SqlStorage): string[] {
         `SELECT DISTINCT strftime('%Y-%m', datetime((${SQL_GAME_DATE_MS}) / 1000, 'unixepoch')) AS month_key
          FROM games g
          INNER JOIN game_results gr ON gr.game_id = g.id
-         WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         WHERE g.status = 'finished' AND ${SQL_GAME_IN_STATS}
          ORDER BY month_key DESC`,
         since,
       )
@@ -544,12 +564,18 @@ export function buildPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
     const profile = getPlayerProfile(sql, row.player_id);
     if (profile) profiles[String(row.player_id)] = profile;
   }
+  const testDemoGames =
+    firstRow<{ c: number }>(
+      sql,
+      "SELECT COUNT(*) as c FROM games WHERE status = 'finished' AND is_demo = 1",
+    )?.c ?? 0;
   return {
     updatedAt: Date.now(),
     club: {
       finishedGames: bundle.summary.finishedGames,
       playersInRating: bundle.summary.playersInRating,
       lastGamePlayers: bundle.summary.lastGamePlayers,
+      testDemoGames,
     },
     lastGame: bundle.lastGame,
     overall: bundle.overall,
@@ -618,6 +644,7 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
   }
 
   migrateNormalizeGameDates(sql);
+  const since = statsSinceMs();
   const rows = [
     ...sql
       .exec(
@@ -634,10 +661,12 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
          LEFT JOIN players p ON p.id = gr.player_id
          WHERE g.status = 'finished'
            AND ${SQL_GAME_DATE_MS} >= ? AND ${SQL_GAME_DATE_MS} < ?
+           AND (COALESCE(g.is_demo, 0) = 1 OR ${SQL_GAME_DATE_MS} >= ?)
          GROUP BY gr.player_id, p.name
          ORDER BY total_profit DESC`,
         range.fromInclusive,
         range.toExclusive,
+        since,
       )
       .toArray(),
   ] as Array<{
@@ -672,7 +701,7 @@ export function getOverall(sql: SqlStorage): OverallStatRow[] {
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
          LEFT JOIN players p ON p.id = gr.player_id
-         WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         WHERE g.status = 'finished' AND ${SQL_GAME_IN_STATS}
          GROUP BY gr.player_id, p.name
          ORDER BY total_profit DESC`,
         since,
@@ -707,7 +736,7 @@ function computeStreak(sql: SqlStorage, playerId: number, since: number): number
         `SELECT gr.profit
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_IN_STATS}
          ORDER BY ${SQL_GAME_DATE_MS} DESC
          LIMIT 20`,
         playerId,
@@ -755,7 +784,7 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
     `SELECT COUNT(DISTINCT g.id) as games_count, COALESCE(SUM(gr.profit), 0) as total_profit
      FROM game_results gr
      JOIN games g ON g.id = gr.game_id
-     WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
+     WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_IN_STATS}`,
     playerId,
     since,
   );
@@ -766,7 +795,7 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
         `SELECT g.id as game_id, g.date, gr.profit
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_IN_STATS}
          ORDER BY ${SQL_GAME_DATE_MS} ASC`,
         playerId,
         since,
@@ -786,7 +815,7 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
         `SELECT g.id as game_id, g.date, gr.buyin, gr.payout, gr.profit, gr.place
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_IN_STATS}
          ORDER BY ${SQL_GAME_DATE_MS} DESC
          LIMIT 10`,
         playerId,
@@ -842,6 +871,18 @@ export function setSession(
 
 export function clearSession(sql: SqlStorage, userId: number): void {
   sql.exec('DELETE FROM bot_sessions WHERE user_id = ?', userId);
+}
+
+/** Удалить тестовые игры (только когда скажете убрать seed). */
+export function clearDemoGames(sql: SqlStorage): number {
+  const ids = [
+    ...sql.exec("SELECT id FROM games WHERE is_demo = 1").toArray(),
+  ] as Array<{ id: number }>;
+  for (const { id } of ids) {
+    deleteGame(sql, id);
+  }
+  refreshStatsSnapshot(sql);
+  return ids.length;
 }
 
 /** Тестовые игроки (без telegram_id) и завершённые игры с результатами (Σ profit = 0). */
@@ -918,7 +959,7 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
       errors.push(`Игра ${g + 1}: дубликаты игроков в составе`);
       continue;
     }
-    const gameId = createGame(sql, subsetIds, createdBy);
+    const gameId = createGame(sql, subsetIds, createdBy, true);
     for (const [idx, buyin, payout] of set) {
       if (idx >= subsetIds.length) continue;
       addOrUpdateResult(sql, gameId, subsetIds[idx], buyin, payout);

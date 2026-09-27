@@ -22,7 +22,7 @@ function tabFromUrl(): Tab | null {
 }
 
 function AppBody() {
-  const { updatedAt } = useStats();
+  const { updatedAt, clubFinishedGames, testDemoGames } = useStats();
   const [tab, setTab] = useState<Tab>(() => tabFromUrl() || 'last');
   const [playerId, setPlayerId] = useState<number | null>(null);
 
@@ -55,7 +55,9 @@ function AppBody() {
         {titles[tab]}
         {updatedAt != null && (
           <div className="text-xs font-normal text-tg-hint mt-1">
-            Общая таблица · обновлено {formatDate(updatedAt)}
+            {testDemoGames > 0 || (clubFinishedGames ?? 0) > 0
+              ? `🧪 Тестовая статистика · обновлено ${formatDate(updatedAt)}`
+              : `Общая таблица · обновлено ${formatDate(updatedAt)}`}
           </div>
         )}
       </header>

@@ -307,6 +307,16 @@ export function createBot(env: Env): Bot {
 
   bot.command('seeddemo', runSeedDemo);
 
+  bot.command('cleardemo', async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
+    const res = await callDo<{ ok: boolean; deleted: number }>(env, { action: 'clearDemoGames' });
+    await ctx.reply(
+      res.deleted > 0
+        ? `🗑 Удалено тестовых игр: ${res.deleted}. Рейтинг обновлён — только «боевые» игры.`
+        : 'Тестовых игр (is_demo) не найдено.',
+    );
+  });
+
   bot.command('refreshstats', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
     const res = await callDo<{

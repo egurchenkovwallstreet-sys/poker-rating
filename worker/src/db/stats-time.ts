@@ -21,6 +21,9 @@ END)`;
 export const SQL_GAME_DATE_MS = gameDateMsExpr('g');
 export const SQL_GAME_DATE_MS_GAMES = gameDateMsExpr('games');
 
+/** Тестовые игры (is_demo) всегда в статистике; остальные — окно 2 года. */
+export const SQL_GAME_IN_STATS = `(COALESCE(g.is_demo, 0) = 1 OR ${SQL_GAME_DATE_MS} >= ?)`;
+
 /** Календарный месяц `YYYY-MM` в UTC. */
 export function monthRangeUtc(month: string): { start: number; end: number } {
   const [year, mon] = month.split('-').map(Number);

@@ -84,6 +84,7 @@ export interface PublicStatsSnapshot {
     finishedGames: number;
     playersInRating: number;
     lastGamePlayers: number;
+    testDemoGames: number;
   };
   lastGame: GameWithResults | null;
   overall: OverallStatRow[];
@@ -118,6 +119,7 @@ export type DoAction =
   | { action: 'getPublicStatsSnapshot' }
   | { action: 'refreshStatsSnapshot' }
   | { action: 'repairAndRefreshStats' }
+  | { action: 'clearDemoGames' }
   | { action: 'getPlayer'; playerId: number }
   | { action: 'getSession'; userId: number }
   | { action: 'setSession'; userId: number; state: string; data: Record<string, unknown> }

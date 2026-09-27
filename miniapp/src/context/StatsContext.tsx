@@ -31,6 +31,7 @@ interface StatsContextValue {
   error: string | null;
   state: LoadState;
   clubFinishedGames: number | null;
+  testDemoGames: number;
   setMonth: (month: string) => void;
   reload: () => void;
   getProfile: (playerId: number) => PlayerProfile | undefined;
@@ -108,6 +109,7 @@ export function StatsProvider({ children }: { children: ReactNode }) {
       error,
       state,
       clubFinishedGames: snapshot?.club.finishedGames ?? null,
+      testDemoGames: snapshot?.club.testDemoGames ?? 0,
       setMonth,
       reload,
       getProfile,
