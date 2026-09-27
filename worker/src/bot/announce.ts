@@ -328,10 +328,23 @@ export async function startGameAction(ctx: Context, env: Env, gameId: number): P
     gameId,
   });
   if (!result.ok) {
-    await ctx.reply(`❌ ${result.error}`);
+    await ctx.reply(`❌ ${result.error ?? 'Не удалось стартовать игру'}`);
     return;
   }
-  const roster = result.roster || [];
+  let roster = Array.isArray(result.roster) ? result.roster : [];
+  if (roster.length === 0) {
+    const again = await callDo<{ ok: boolean; players: Player[] }>(env, {
+      action: 'listRsvpYesPlayers',
+      gameId,
+    });
+    roster = again.players ?? [];
+  }
+  if (roster.length === 0) {
+    await ctx.reply(
+      `❌ Игра #${gameId}: в ответе сервера пустой состав, хотя старт прошёл. Проверьте RSVP и сделайте новый анонс.`,
+    );
+    return;
+  }
   const lines = roster.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
   await ctx.reply(
     `▶️ Игра #${gameId} открыта!\n\nСостав (${roster.length}):\n${lines}\n\n(Ввод результатов — следующий этап.)`,

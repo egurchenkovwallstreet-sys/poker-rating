@@ -43,6 +43,23 @@ export function getGameById(sql: SqlStorage, gameId: number): Game | null {
   return firstRow<Game>(sql, 'SELECT * FROM games WHERE id = ?', gameId);
 }
 
+/** max_players=0 в старых строках ломало slice(0,0) → пустой состав при старте. */
+export function effectiveMaxPlayers(game: Game, yesCount: number): number {
+  const raw = Number(game.max_players);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return Math.max(yesCount, 1);
+}
+
+export function repairGameMaxPlayersIfZero(sql: SqlStorage, gameId: number): void {
+  const game = getGameById(sql, gameId);
+  if (!game) return;
+  const raw = Number(game.max_players);
+  if (Number.isFinite(raw) && raw > 0) return;
+  const yesCount = countRsvpYes(sql, gameId);
+  const fixed = Math.max(yesCount, 8);
+  sql.exec('UPDATE games SET max_players = ? WHERE id = ?', fixed, gameId);
+}
+
 export function listRegisteredPlayers(sql: SqlStorage): Player[] {
   return [
     ...sql
@@ -230,11 +247,23 @@ export function startAnnouncedGame(
     return { ok: false, error: 'Эту игру нельзя стартовать' };
   }
   renumberRsvpQueue(sql, gameId);
-  const roster = listRsvpYesPlayers(sql, gameId).slice(0, game.max_players);
+  repairGameMaxPlayersIfZero(sql, gameId);
+  const gameFresh = getGameById(sql, gameId)!;
+  const allYes = listRsvpYesPlayers(sql, gameId);
+  const cap = effectiveMaxPlayers(gameFresh, allYes.length);
+  const roster = allYes.slice(0, cap);
   if (roster.length === 0) {
+    const yesOnly = firstRow<{ c: number }>(
+      sql,
+      "SELECT COUNT(*) as c FROM game_rsvps WHERE game_id = ? AND response = 'yes'",
+      gameId,
+    )?.c ?? 0;
     return {
       ok: false,
-      error: `На игру #${gameId} никто не нажал «Участвую». Проверьте, что это та же игра, что в анонсе.`,
+      error:
+        yesOnly > 0
+          ? `На игру #${gameId} есть ${yesOnly} RSVP, но состав не собрался (нет связи с профилем игрока). Сделайте новый анонс.`
+          : `На игру #${gameId} никто не нажал «Участвую».`,
     };
   }
   sql.exec("UPDATE games SET status = 'open' WHERE id = ?", gameId);
@@ -269,17 +298,24 @@ export function listInviteMessages(
 
 export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
   migrateGameRsvpsTable(sql);
-  return [
+  const rows = [
     ...sql
       .exec(
-        `SELECT p.* FROM game_rsvps r
-         JOIN players p ON p.id = r.player_id
+        `SELECT
+           COALESCE(p.id, r.player_id) as id,
+           COALESCE(p.name, 'Игрок #' || r.player_id) as name,
+           p.telegram_id,
+           p.avatar_file_id,
+           COALESCE(p.created_at, r.created_at) as created_at
+         FROM game_rsvps r
+         LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
          ORDER BY r.queue_order ASC, r.created_at ASC`,
         gameId,
       )
       .toArray(),
   ] as unknown as Player[];
+  return rows;
 }
 
 export function listRsvpYesWithQueue(
@@ -291,9 +327,11 @@ export function listRsvpYesWithQueue(
   const rows = [
     ...sql
       .exec(
-        `SELECT r.queue_order, p.name, p.id as player_id
+        `SELECT r.queue_order,
+                COALESCE(p.name, 'Игрок #' || r.player_id) as name,
+                COALESCE(p.id, r.player_id) as player_id
          FROM game_rsvps r
-         JOIN players p ON p.id = r.player_id
+         LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
          ORDER BY r.queue_order ASC, r.created_at ASC`,
         gameId,
