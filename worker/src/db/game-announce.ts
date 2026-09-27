@@ -391,6 +391,14 @@ export function countRsvpYes(sql: SqlStorage, gameId: number): number {
   ensureRsvpRegistrationsTable(sql);
   const gid = resolveRsvpGameId(sql, gameId);
   if (!Number.isFinite(gid)) return 0;
+  return countRsvpYesOnGame(sql, gid);
+}
+
+/** Счётчик «yes» строго на этом game_id (для админ-списка старта). */
+export function countRsvpYesOnGame(sql: SqlStorage, gameId: number): number {
+  ensureRsvpRegistrationsTable(sql);
+  const gid = normalizeGameId(gameId);
+  if (!Number.isFinite(gid)) return 0;
   const row = sql
     .exec(
       `SELECT COUNT(*) as c FROM ${RSVP_TABLE} WHERE game_id = ? AND response = 'yes'`,
@@ -408,6 +416,22 @@ export function listAnnouncedGames(sql: SqlStorage): Game[] {
       )
       .toArray(),
   ] as unknown as Game[];
+}
+
+/** Игры для «Старт»: перенос RSVP на актуальный анонс + реальные счётчики по id. */
+export function listAnnouncedGamesForStart(
+  sql: SqlStorage,
+): Array<{ id: number; date: number; max_players: number; yesCount: number }> {
+  ensureRsvpRegistrationsTable(sql);
+  const latest = getLatestAnnouncedGameId(sql);
+  if (latest != null) consolidateYesRsvpsToGame(sql, latest);
+  const games = listAnnouncedGames(sql);
+  return games.map((g) => ({
+    id: g.id,
+    date: g.date,
+    max_players: g.max_players,
+    yesCount: countRsvpYesOnGame(sql, g.id),
+  }));
 }
 
 /** Удалить только лишние дубликаты (game_id + player_id), не трогая единственную строку. */

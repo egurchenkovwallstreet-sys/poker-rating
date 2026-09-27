@@ -440,47 +440,41 @@ export async function handleGameRsvp(
 }
 
 export async function listAnnouncedForStart(ctx: Context, env: Env): Promise<void> {
-  const res = await callDo<{ ok: boolean; games: Game[] }>(env, { action: 'listAnnouncedGames' });
-  if (res.games.length === 0) {
+  const res = await callDo<{
+    ok: boolean;
+    games: Array<{ id: number; date: number; max_players: number; yesCount: number }>;
+  }>(env, { action: 'listAnnouncedGamesForStart' });
+  const withCounts = res.games ?? [];
+  if (withCounts.length === 0) {
     await ctx.reply('Нет игр в ожидании старта.');
     return;
   }
-  const withCounts: Array<{ id: number; date: number; yesCount: number; maxPlayers: number }> = [];
-  for (const g of res.games) {
-    const sum = await callDo<{ ok: boolean; yesCount: number; maxPlayers: number }>(env, {
-      action: 'getRsvpSummary',
-      gameId: g.id,
-    });
-    withCounts.push({
+  withCounts.sort((a, b) => b.yesCount - a.yesCount || a.date - b.date);
+  const withRsvp = withCounts
+    .filter((g) => g.yesCount > 0)
+    .map((g) => ({
       id: g.id,
       date: g.date,
-      yesCount: sum.yesCount ?? 0,
-      maxPlayers: sum.maxPlayers ?? g.max_players,
-    });
-  }
-  withCounts.sort((a, b) => b.yesCount - a.yesCount || a.date - b.date);
-  const withRsvp = withCounts.filter((g) => g.yesCount > 0);
+      yesCount: g.yesCount,
+      maxPlayers: g.max_players,
+    }));
   if (withRsvp.length === 0) {
     const ids = withCounts.map((g) => `#${g.id}`).join(', ');
     await ctx.reply(
       `❌ Ни на одной анонсированной игре нет «Участvую» (${ids}).\n\n` +
-        `1) Сделайте *новый* анонс.\n` +
-        `2) Все жмут «Участvую» в сообщении с *🆔 Игра #…* (не в старых).\n` +
+        `1) Сделайте новый анонс.\n` +
+        `2) Все жмут «Участvую» в сообщении с 🆔 Игра #… (не в старых).\n` +
         `3) Старт — кнопка с «N/… запис.» где N > 0.\n\n` +
-        `Диагностика: /rsvpdebug <номер игры>`,
-      { parse_mode: 'Markdown' },
+        `Диагностика: /rsvpdebug номер_игры`,
     );
     return;
   }
   const empty = withCounts.filter((g) => g.yesCount === 0);
   let hint = '▶️ Стартуйте игру с записями (кнопка «N/… запис.», N > 0):';
   if (empty.length > 0) {
-    hint += `\n_Без записей: ${empty.map((g) => `#${g.id}`).join(', ')} — не эти._`;
+    hint += `\nБез записей: ${empty.map((g) => `#${g.id}`).join(', ')} — не эти.`;
   }
-  await ctx.reply(hint, {
-    parse_mode: 'Markdown',
-    reply_markup: announceGamesKeyboard(withRsvp),
-  });
+  await ctx.reply(hint, { reply_markup: announceGamesKeyboard(withRsvp) });
 }
 
 export async function startGameAction(ctx: Context, env: Env, gameId: number): Promise<void> {

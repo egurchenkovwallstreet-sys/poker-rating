@@ -586,7 +586,10 @@ export function createBot(env: Env): Bot {
     const userId = ctx.from!.id;
 
     if (data === 'admin:back') {
-      if (!checkAdmin(userId)) return;
+      if (!checkAdmin(userId)) {
+        await ctx.answerCallbackQuery({ text: '⛔ Доступ запрещён', show_alert: true });
+        return;
+      }
       await ctx.editMessageText('🔧 Админ-меню', { reply_markup: adminMenu() });
       await ctx.answerCallbackQuery();
       return;
@@ -647,9 +650,17 @@ export function createBot(env: Env): Bot {
     }
 
     if (data === 'admin:start_game') {
-      if (!checkAdmin(userId)) return;
-      await listAnnouncedForStart(ctx, env);
+      if (!checkAdmin(userId)) {
+        await ctx.answerCallbackQuery({ text: '⛔ Доступ запрещён', show_alert: true });
+        return;
+      }
       await ctx.answerCallbackQuery();
+      try {
+        await listAnnouncedForStart(ctx, env);
+      } catch (e) {
+        console.error('admin:start_game', e);
+        await ctx.reply(`❌ Не удалось открыть список: ${e instanceof Error ? e.message : String(e)}`);
+      }
       return;
     }
 
@@ -660,9 +671,17 @@ export function createBot(env: Env): Bot {
     }
 
     if (data.startsWith('game:start:')) {
-      if (!checkAdmin(userId)) return;
-      await startGameAction(ctx, env, parseInt(data.split(':')[2], 10));
-      await ctx.answerCallbackQuery();
+      if (!checkAdmin(userId)) {
+        await ctx.answerCallbackQuery({ text: '⛔ Доступ запрещён', show_alert: true });
+        return;
+      }
+      await ctx.answerCallbackQuery({ text: 'Стартуем…' });
+      try {
+        await startGameAction(ctx, env, parseInt(data.split(':')[2], 10));
+      } catch (e) {
+        console.error('game:start', e);
+        await ctx.reply(`❌ Ошибка старта: ${e instanceof Error ? e.message : String(e)}`);
+      }
       return;
     }
 

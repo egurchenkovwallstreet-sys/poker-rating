@@ -189,7 +189,7 @@ export class PokerRoom implements DurableObject {
             body.response,
           );
           if (!result.ok) return json({ ok: false, error: result.error }, 400);
-          return json({ ok: true, ...result });
+          return json(result);
         }
         case 'getRsvpQueueOrder': {
           const gameId = announce.normalizeGameId(body.gameId);
@@ -216,6 +216,8 @@ export class PokerRoom implements DurableObject {
         }
         case 'listAnnouncedGames':
           return json({ ok: true, games: announce.listAnnouncedGames(this.sql) });
+        case 'listAnnouncedGamesForStart':
+          return json({ ok: true, games: announce.listAnnouncedGamesForStart(this.sql) });
         case 'getActiveAnnouncedGame': {
           const active = announce.getActiveAnnouncedGame(this.sql);
           return json(
