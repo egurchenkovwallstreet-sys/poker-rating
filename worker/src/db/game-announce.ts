@@ -5,6 +5,28 @@ import { firstRow } from './query-helpers';
 /** Единственная таблица записей «Участvую» (старая game_rsvps в проде могла быть битой). */
 const RSVP_TABLE = 'game_rsvp_registrations';
 
+export function normalizeGameId(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.floor(raw);
+  const n = parseInt(String(raw ?? ''), 10);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/** Все «yes» с других незавершённых игр → на одну (актуальный анонс / старт). */
+function mergeYesRsvpsToGame(sql: SqlStorage, targetGameId: number): void {
+  ensureRsvpRegistrationsTable(sql);
+  sql.exec(
+    `UPDATE ${RSVP_TABLE}
+     SET game_id = ?
+     WHERE response = 'yes'
+       AND game_id != ?
+       AND game_id IN (
+         SELECT id FROM games WHERE status IN ('draft', 'announced', 'registration_full')
+       )`,
+    targetGameId,
+    targetGameId,
+  );
+}
+
 export function ensureRsvpRegistrationsTable(sql: SqlStorage): void {
   sql.exec(`
     CREATE TABLE IF NOT EXISTS ${RSVP_TABLE} (
@@ -306,18 +328,7 @@ export function createAnnouncedGame(
   const row = sql.exec('SELECT id FROM games ORDER BY id DESC LIMIT 1').one() as { id: number };
   const gameId = row.id;
   ensureRsvpRegistrationsTable(sql);
-  // «Участvую» привязан к game_id. Переносим yes со старых анонсов, иначе старт новой игры = «никто не записался».
-  sql.exec(
-    `INSERT OR IGNORE INTO ${RSVP_TABLE} (game_id, player_id, response, created_at)
-     SELECT ?, r.player_id, r.response, r.created_at
-     FROM ${RSVP_TABLE} r
-     INNER JOIN games g ON g.id = r.game_id
-     WHERE g.status IN ('announced', 'registration_full')
-       AND g.id != ?
-       AND r.response = 'yes'`,
-    gameId,
-    gameId,
-  );
+  mergeYesRsvpsToGame(sql, gameId);
   sql.exec(
     `UPDATE games SET status = 'draft'
      WHERE status IN ('announced', 'registration_full') AND id != ?`,
@@ -519,18 +530,49 @@ export function setGameRsvp(
 export function startAnnouncedGame(
   sql: SqlStorage,
   gameId: number,
-): { ok: true; roster: Player[]; yesCount: number } | { ok: false; error: string } {
+): {
+  ok: true;
+  roster: Player[];
+  yesCount: number;
+  startedGameId: number;
+  requestedGameId: number;
+  mergedFromOtherGames?: boolean;
+} | { ok: false; error: string } {
   ensureRsvpRegistrationsTable(sql);
-  const game = getGameById(sql, gameId);
-  if (!game) return { ok: false, error: 'Игра не найдена' };
-  if (game.status !== 'announced' && game.status !== 'registration_full') {
-    return { ok: false, error: 'Эту игру нельзя стартовать' };
+  const requestedGameId = normalizeGameId(gameId);
+  if (!Number.isFinite(requestedGameId)) {
+    return { ok: false, error: 'Неверный номер игры' };
   }
-  renumberRsvpQueue(sql, gameId);
-  repairGameMaxPlayersIfZero(sql, gameId);
-  const gameFresh = getGameById(sql, gameId)!;
-  const yesOnly = countRsvpYes(sql, gameId);
-  const allYes = listRsvpYesPlayersRobust(sql, gameId);
+
+  const latestAnnounced = getLatestAnnouncedGameId(sql);
+  let startedGameId = requestedGameId;
+  if (latestAnnounced != null) {
+    startedGameId = latestAnnounced;
+  }
+
+  const yesBeforeMerge = countRsvpYes(sql, startedGameId);
+  mergeYesRsvpsToGame(sql, startedGameId);
+  const mergedFromOtherGames = countRsvpYes(sql, startedGameId) > yesBeforeMerge;
+
+  let game = getGameById(sql, startedGameId);
+  if (!game) return { ok: false, error: 'Игра не найдена' };
+
+  if (game.status === 'draft' && countRsvpYes(sql, startedGameId) > 0) {
+    sql.exec("UPDATE games SET status = 'announced' WHERE id = ?", startedGameId);
+    game = getGameById(sql, startedGameId)!;
+  }
+
+  if (game.status !== 'announced' && game.status !== 'registration_full') {
+    return {
+      ok: false,
+      error: `Игра #${startedGameId} в статусе «${game.status}». Нужен анонс → «Участvую» → старт.`,
+    };
+  }
+  renumberRsvpQueue(sql, startedGameId);
+  repairGameMaxPlayersIfZero(sql, startedGameId);
+  const gameFresh = getGameById(sql, startedGameId)!;
+  const yesOnly = countRsvpYes(sql, startedGameId);
+  const allYes = listRsvpYesPlayersRobust(sql, startedGameId);
   const cap = effectiveMaxPlayers(gameFresh, Math.max(allYes.length, yesOnly));
   const roster = allYes.slice(0, cap);
   if (roster.length === 0) {
@@ -546,7 +588,7 @@ export function startAnnouncedGame(
            GROUP BY g.id
            HAVING yes_count > 0
            ORDER BY yes_count DESC`,
-          gameId,
+          startedGameId,
         )
         .toArray(),
     ] as Array<{ game_id: number; yes_count: number }>;
@@ -558,13 +600,20 @@ export function startAnnouncedGame(
       ok: false,
       error:
         yesOnly > 0
-          ? `На игру #${gameId} есть ${yesOnly} RSVP, но состав не собрался. Сделайте новый анонс.${hint}`
-          : `На игру #${gameId} никто не нажал «Участвую».${hint}`,
+          ? `На игру #${startedGameId} есть ${yesOnly} RSVP, но состав не собрался.${hint}`
+          : `На игру #${startedGameId} никто не нажал «Участвую».${hint}`,
     };
   }
-  ensureGameResultsRowsForRoster(sql, gameId, roster);
-  sql.exec("UPDATE games SET status = 'open' WHERE id = ?", gameId);
-  return { ok: true, roster, yesCount: roster.length };
+  ensureGameResultsRowsForRoster(sql, startedGameId, roster);
+  sql.exec("UPDATE games SET status = 'open' WHERE id = ?", startedGameId);
+  return {
+    ok: true,
+    roster,
+    yesCount: roster.length,
+    startedGameId,
+    requestedGameId,
+    mergedFromOtherGames,
+  };
 }
 
 export function saveInviteMessage(

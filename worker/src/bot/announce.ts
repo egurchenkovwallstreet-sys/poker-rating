@@ -457,6 +457,9 @@ export async function startGameAction(ctx: Context, env: Env, gameId: number): P
     roster?: Player[];
     players?: Player[];
     yesCount?: number;
+    startedGameId?: number;
+    requestedGameId?: number;
+    mergedFromOtherGames?: boolean;
   };
   try {
     result = await callDo(env, {
@@ -471,18 +474,19 @@ export async function startGameAction(ctx: Context, env: Env, gameId: number): P
     await ctx.reply(`❌ ${result.error ?? 'Не удалось стартовать игру'}`);
     return;
   }
+  const loadGameId = result.startedGameId ?? gameId;
   let roster = result.players ?? result.roster ?? [];
   if (roster.length === 0) {
     const again = await callDo<{ ok: boolean; players: Player[] }>(env, {
       action: 'listRsvpYesPlayers',
-      gameId,
+      gameId: loadGameId,
     });
     roster = again.players ?? [];
   }
   if (roster.length === 0) {
     const sum = await callDo<{ ok: boolean; yesCount: number }>(env, {
       action: 'getRsvpSummary',
-      gameId,
+      gameId: loadGameId,
     });
     await ctx.reply(
       `❌ Игра #${gameId}: состав пустой (RSVP yes в базе: ${sum.yesCount ?? 0}).\n` +
@@ -490,9 +494,18 @@ export async function startGameAction(ctx: Context, env: Env, gameId: number): P
     );
     return;
   }
-  const lines = roster.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+  const startedId = result.startedGameId ?? gameId;
+  const lines = roster.map((p, i) => `${i + 1}. ${p.name ?? `id:${p.id}`}`).join('\n');
+  let head = `▶️ Игра #${startedId} открыта!`;
+  if (result.requestedGameId != null && result.startedGameId != null && result.requestedGameId !== result.startedGameId) {
+    head += `\n_(Кнопка была для #${result.requestedGameId}; записи на #${result.startedGameId}.)_`;
+  }
+  if (result.mergedFromOtherGames) {
+    head += `\n_(Записи с других анонсов перенесены на #${startedId}.)_`;
+  }
   await ctx.reply(
-    `▶️ Игра #${gameId} открыта!\n\nСостав (${roster.length}):\n${lines}\n\n(Ввод результатов — следующий этап.)`,
+    `${head}\n\nСостав (${roster.length}):\n${lines}\n\n(Ввод результатов — следующий этап.)`,
+    { parse_mode: 'Markdown' },
   );
 
   const players = await callDo<{ ok: boolean; players: Player[] }>(env, {
@@ -503,7 +516,7 @@ export async function startGameAction(ctx: Context, env: Env, gameId: number): P
     try {
       await ctx.api.sendMessage(
         p.telegram_id,
-        `▶️ Игра #${gameId} началась. Удачи за столом! 🃏`,
+        `▶️ Игра #${startedId} началась. Удачи за столом! 🃏`,
       );
     } catch {
       /* ignore */

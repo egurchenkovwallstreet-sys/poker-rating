@@ -182,16 +182,20 @@ export class PokerRoom implements DurableObject {
         case 'listRegisteredPlayers':
           return json({ ok: true, players: announce.listRegisteredPlayers(this.sql) });
         case 'setGameRsvp': {
-          const result = announce.setGameRsvp(this.sql, body.gameId, body.playerId, body.response);
+          const gameId = announce.normalizeGameId(body.gameId);
+          const playerId = announce.normalizeGameId(body.playerId);
+          const result = announce.setGameRsvp(this.sql, gameId, playerId, body.response);
           if (!result.ok) return json({ ok: false, error: result.error }, 400);
           return json({ ok: true, ...result });
         }
         case 'getRsvpQueueOrder': {
-          const queueOrder = announce.getRsvpQueueOrder(this.sql, body.gameId, body.playerId);
+          const gameId = announce.normalizeGameId(body.gameId);
+          const playerId = announce.normalizeGameId(body.playerId);
+          const queueOrder = announce.getRsvpQueueOrder(this.sql, gameId, playerId);
           return json({
             ok: true,
             queueOrder,
-            yesCount: announce.countRsvpYes(this.sql, body.gameId),
+            yesCount: announce.countRsvpYes(this.sql, gameId),
           });
         }
         case 'startAnnouncedGame': {
@@ -202,6 +206,9 @@ export class PokerRoom implements DurableObject {
             roster: result.roster,
             players: result.roster,
             yesCount: result.yesCount,
+            startedGameId: result.startedGameId,
+            requestedGameId: result.requestedGameId,
+            mergedFromOtherGames: result.mergedFromOtherGames,
           });
         }
         case 'listAnnouncedGames':
