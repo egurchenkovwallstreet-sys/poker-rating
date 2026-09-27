@@ -38,12 +38,16 @@ export function formatTicket(price: number): string {
   return `${price.toLocaleString('ru-RU')} ₽`;
 }
 
-export function buildAnnounceText(game: Game, yesCount: number, rosterNames: string[] = []): string {
+export function buildAnnounceText(
+  game: Game,
+  yesCount: number,
+  roster: Array<{ queue_order: number; name: string }> = [],
+): string {
   const spotsLeft = Math.max(0, game.max_players - yesCount);
   const rosterBlock =
-    rosterNames.length > 0
-      ? `\n📋 *Уже идут:*\n${rosterNames.map((n, i) => `${i + 1}. ${n}`).join('\n')}\n`
-      : '\n📋 *Уже идут:* пока никого\n';
+    roster.length > 0
+      ? `\n📋 *Очередь (место → игрок):*\n${roster.map((r) => `${r.queue_order}. ${r.name}`).join('\n')}\n`
+      : '\n📋 *Очередь:* пока никого\n';
   return (
     `🃏 *Покерный вечер*\n\n` +
     `📅 ${formatGameDate(game.date)}\n` +
@@ -57,12 +61,15 @@ export function buildAnnounceText(game: Game, yesCount: number, rosterNames: str
 }
 
 async function loadAnnounceMessage(env: Env, gameId: number, game: Game): Promise<string> {
-  const roster = await callDo<{ ok: boolean; players: Player[] }>(env, {
-    action: 'listRsvpYesPlayers',
+  const roster = await callDo<{
+    ok: boolean;
+    entries: Array<{ queue_order: number; name: string; player_id: number }>;
+  }>(env, {
+    action: 'listRsvpYesWithQueue',
     gameId,
   });
-  const names = roster.players.map((p) => p.name);
-  return buildAnnounceText(game, names.length, names);
+  const entries = roster.entries ?? [];
+  return buildAnnounceText(game, entries.length, entries);
 }
 
 async function syncAllInviteMessages(api: Api, env: Env, gameId: number, game: Game): Promise<void> {
@@ -264,11 +271,11 @@ export async function handleGameRsvp(
   const game = gameRes.game;
 
   if (response === 'yes') {
-    await ctx.answerCallbackQuery({
-      text: result.queueOrder ? `Вы в списке (#${result.queueOrder})` : 'Записано',
-    });
     const spot = result.queueOrder ?? result.yesCount ?? 0;
-    const short = `✅ ${playerRes.player.name} записался на игру #${gameId} (место ${spot} из ${game.max_players}).`;
+    await ctx.answerCallbackQuery({
+      text: spot > 0 ? `Вы в очереди: место ${spot} из ${game.max_players}` : 'Записано',
+    });
+    const short = `✅ ${playerRes.player.name} — место ${spot} в очереди на игру #${gameId} (всего мест ${game.max_players}).`;
     await notifyAllRegistered(ctx.api, env, short);
   } else {
     await ctx.answerCallbackQuery({ text: 'Понятно, без вас' });
@@ -297,8 +304,21 @@ export async function listAnnouncedForStart(ctx: Context, env: Env): Promise<voi
     await ctx.reply('Нет игр в ожидании старта.');
     return;
   }
-  await ctx.reply('▶️ Выберите игру для старта:', {
-    reply_markup: announceGamesKeyboard(res.games),
+  const withCounts: Array<{ id: number; date: number; yesCount: number; maxPlayers: number }> = [];
+  for (const g of res.games) {
+    const sum = await callDo<{ ok: boolean; yesCount: number; maxPlayers: number }>(env, {
+      action: 'getRsvpSummary',
+      gameId: g.id,
+    });
+    withCounts.push({
+      id: g.id,
+      date: g.date,
+      yesCount: sum.yesCount ?? 0,
+      maxPlayers: sum.maxPlayers ?? g.max_players,
+    });
+  }
+  await ctx.reply('▶️ Выберите игру для старта (в кнопке — сколько записалось):', {
+    reply_markup: announceGamesKeyboard(withCounts),
   });
 }
 
@@ -311,8 +331,11 @@ export async function startGameAction(ctx: Context, env: Env, gameId: number): P
     await ctx.reply(`❌ ${result.error}`);
     return;
   }
-  const names = (result.roster || []).map((p) => p.name).join(', ') || 'никто не записался';
-  await ctx.reply(`▶️ Игра #${gameId} открыта!\n\nСостав: ${names}\n\n(Ввод результатов — следующий этап.)`);
+  const roster = result.roster || [];
+  const lines = roster.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+  await ctx.reply(
+    `▶️ Игра #${gameId} открыта!\n\nСостав (${roster.length}):\n${lines}\n\n(Ввод результатов — следующий этап.)`,
+  );
 
   const players = await callDo<{ ok: boolean; players: Player[] }>(env, {
     action: 'listRegisteredPlayers',

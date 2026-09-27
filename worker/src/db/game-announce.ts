@@ -2,6 +2,43 @@ import type { SqlStorage } from '@cloudflare/workers-types';
 import type { Game, Player } from '../types';
 import { firstRow } from './query-helpers';
 
+/** Без PRIMARY KEY UPSERT не работает — дубли RSVP и сломанная очередь. */
+export function migrateGameRsvpsTable(sql: SqlStorage): void {
+  try {
+    const master = firstRow<{ sql: string }>(
+      sql,
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='game_rsvps'",
+    );
+    if (!master?.sql) return;
+    if (master.sql.includes('PRIMARY KEY (game_id, player_id)')) return;
+
+    sql.exec('PRAGMA foreign_keys = OFF');
+    sql.exec(`
+      CREATE TABLE game_rsvps_migrated (
+        game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+        player_id INTEGER NOT NULL REFERENCES players(id),
+        response TEXT NOT NULL CHECK(response IN ('yes', 'no')),
+        queue_order INTEGER,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (game_id, player_id)
+      )
+    `);
+    sql.exec(`
+      INSERT INTO game_rsvps_migrated (game_id, player_id, response, queue_order, created_at)
+      SELECT game_id, player_id, response, queue_order, created_at FROM game_rsvps
+      WHERE rowid IN (
+        SELECT MIN(rowid) FROM game_rsvps GROUP BY game_id, player_id
+      )
+    `);
+    sql.exec('DROP TABLE game_rsvps');
+    sql.exec('ALTER TABLE game_rsvps_migrated RENAME TO game_rsvps');
+    sql.exec('CREATE INDEX IF NOT EXISTS idx_game_rsvps_game ON game_rsvps(game_id)');
+    sql.exec('PRAGMA foreign_keys = ON');
+  } catch (e) {
+    console.error('migrateGameRsvpsTable:', e);
+  }
+}
+
 export function getGameById(sql: SqlStorage, gameId: number): Game | null {
   return firstRow<Game>(sql, 'SELECT * FROM games WHERE id = ?', gameId);
 }
@@ -57,6 +94,37 @@ export function listAnnouncedGames(sql: SqlStorage): Game[] {
   ] as unknown as Game[];
 }
 
+function nextRsvpQueueOrder(sql: SqlStorage, gameId: number): number {
+  const row = firstRow<{ m: number }>(
+    sql,
+    `SELECT COALESCE(MAX(queue_order), 0) as m FROM game_rsvps
+     WHERE game_id = ? AND response = 'yes'`,
+    gameId,
+  );
+  return (row?.m ?? 0) + 1;
+}
+
+export function renumberRsvpQueue(sql: SqlStorage, gameId: number): void {
+  const rows = [
+    ...sql
+      .exec(
+        "SELECT player_id FROM game_rsvps WHERE game_id = ? AND response = 'yes' ORDER BY queue_order ASC, created_at ASC",
+        gameId,
+      )
+      .toArray(),
+  ] as Array<{ player_id: number }>;
+  let order = 1;
+  for (const row of rows) {
+    sql.exec(
+      'UPDATE game_rsvps SET queue_order = ? WHERE game_id = ? AND player_id = ?',
+      order,
+      gameId,
+      row.player_id,
+    );
+    order++;
+  }
+}
+
 export function setGameRsvp(
   sql: SqlStorage,
   gameId: number,
@@ -69,6 +137,7 @@ export function setGameRsvp(
   yesCount?: number;
   queueOrder?: number | null;
 } {
+  migrateGameRsvpsTable(sql);
   const game = getGameById(sql, gameId);
   if (!game) return { ok: false, error: 'Игра не найдена' };
   if (game.status === 'open' || game.status === 'finished' || game.status === 'draft') {
@@ -116,68 +185,59 @@ export function setGameRsvp(
     return { ok: false, error: 'Все места заняты' };
   }
 
-  const queueOrder = yesCount + 1;
+  const queueOrder = nextRsvpQueueOrder(sql, gameId);
   sql.exec(
     `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
      VALUES (?, ?, 'yes', ?, ?)
-     ON CONFLICT(game_id, player_id) DO UPDATE SET response = 'yes', queue_order = excluded.queue_order, created_at = excluded.created_at`,
+     ON CONFLICT(game_id, player_id) DO UPDATE SET
+       response = 'yes',
+       queue_order = excluded.queue_order,
+       created_at = excluded.created_at`,
     gameId,
     playerId,
     queueOrder,
     now,
   );
+  renumberRsvpQueue(sql, gameId);
+
+  const slot =
+    firstRow<{ queue_order: number | null }>(
+      sql,
+      'SELECT queue_order FROM game_rsvps WHERE game_id = ? AND player_id = ?',
+      gameId,
+      playerId,
+    )?.queue_order ?? queueOrder;
+
+  const finalYesCount = countRsvpYes(sql, gameId);
 
   let registrationClosed = false;
-  if (queueOrder >= game.max_players) {
+  if (finalYesCount >= game.max_players) {
     sql.exec("UPDATE games SET status = 'registration_full' WHERE id = ?", gameId);
     registrationClosed = true;
   }
 
-  return { ok: true, yesCount: queueOrder, queueOrder, registrationClosed };
-}
-
-function renumberRsvpQueue(sql: SqlStorage, gameId: number): void {
-  const rows = [
-    ...sql
-      .exec(
-        "SELECT player_id FROM game_rsvps WHERE game_id = ? AND response = 'yes' ORDER BY queue_order ASC, created_at ASC",
-        gameId,
-      )
-      .toArray(),
-  ] as Array<{ player_id: number }>;
-  let order = 1;
-  for (const row of rows) {
-    sql.exec(
-      'UPDATE game_rsvps SET queue_order = ? WHERE game_id = ? AND player_id = ?',
-      order,
-      gameId,
-      row.player_id,
-    );
-    order++;
-  }
+  return { ok: true, yesCount: finalYesCount, queueOrder: slot, registrationClosed };
 }
 
 export function startAnnouncedGame(
   sql: SqlStorage,
   gameId: number,
 ): { ok: true; roster: Player[] } | { ok: false; error: string } {
+  migrateGameRsvpsTable(sql);
   const game = getGameById(sql, gameId);
   if (!game) return { ok: false, error: 'Игра не найдена' };
   if (game.status !== 'announced' && game.status !== 'registration_full') {
     return { ok: false, error: 'Эту игру нельзя стартовать' };
   }
+  renumberRsvpQueue(sql, gameId);
+  const roster = listRsvpYesPlayers(sql, gameId).slice(0, game.max_players);
+  if (roster.length === 0) {
+    return {
+      ok: false,
+      error: `На игру #${gameId} никто не нажал «Участвую». Проверьте, что это та же игра, что в анонсе.`,
+    };
+  }
   sql.exec("UPDATE games SET status = 'open' WHERE id = ?", gameId);
-  const roster = [
-    ...sql
-      .exec(
-        `SELECT p.* FROM game_rsvps r
-         JOIN players p ON p.id = r.player_id
-         WHERE r.game_id = ? AND r.response = 'yes'
-         ORDER BY r.queue_order ASC`,
-        gameId,
-      )
-      .toArray(),
-  ] as unknown as Player[];
   return { ok: true, roster };
 }
 
@@ -208,6 +268,7 @@ export function listInviteMessages(
 }
 
 export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
+  migrateGameRsvpsTable(sql);
   return [
     ...sql
       .exec(
@@ -219,6 +280,31 @@ export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
       )
       .toArray(),
   ] as unknown as Player[];
+}
+
+export function listRsvpYesWithQueue(
+  sql: SqlStorage,
+  gameId: number,
+): Array<{ queue_order: number; name: string; player_id: number }> {
+  migrateGameRsvpsTable(sql);
+  renumberRsvpQueue(sql, gameId);
+  const rows = [
+    ...sql
+      .exec(
+        `SELECT r.queue_order, p.name, p.id as player_id
+         FROM game_rsvps r
+         JOIN players p ON p.id = r.player_id
+         WHERE r.game_id = ? AND r.response = 'yes'
+         ORDER BY r.queue_order ASC, r.created_at ASC`,
+        gameId,
+      )
+      .toArray(),
+  ] as Array<{ queue_order: number | null; name: string; player_id: number }>;
+  return rows.map((r, i) => ({
+    queue_order: r.queue_order ?? i + 1,
+    name: r.name,
+    player_id: r.player_id,
+  }));
 }
 
 export function listOpenGames(sql: SqlStorage): Game[] {

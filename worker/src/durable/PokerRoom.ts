@@ -202,6 +202,8 @@ export class PokerRoom implements DurableObject {
         }
         case 'listRsvpYesPlayers':
           return json({ ok: true, players: announce.listRsvpYesPlayers(this.sql, body.gameId) });
+        case 'listRsvpYesWithQueue':
+          return json({ ok: true, entries: announce.listRsvpYesWithQueue(this.sql, body.gameId) });
         case 'saveInviteMessage':
           announce.saveInviteMessage(this.sql, body.gameId, body.telegramId, body.messageId);
           return json({ ok: true });

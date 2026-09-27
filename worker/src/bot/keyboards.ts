@@ -20,11 +20,15 @@ export function gameRsvpKeyboard(gameId: number) {
     .text('❌ Нет', `game:rsvp:${gameId}:no`);
 }
 
-export function announceGamesKeyboard(games: Array<{ id: number; date: number }>) {
+export function announceGamesKeyboard(
+  games: Array<{ id: number; date: number; yesCount?: number; maxPlayers?: number }>,
+) {
   const kb = new InlineKeyboard();
   for (const g of games) {
     const date = new Date(g.date).toLocaleDateString('ru-RU');
-    kb.text(`▶️ #${g.id} (${date})`, `game:start:${g.id}`).row();
+    const rsvp =
+      g.yesCount != null && g.maxPlayers != null ? ` · ${g.yesCount}/${g.maxPlayers} запис.` : '';
+    kb.text(`▶️ #${g.id} (${date})${rsvp}`, `game:start:${g.id}`).row();
   }
   kb.text('◀️ Назад', 'admin:games');
   return kb;
