@@ -213,7 +213,10 @@ export async function handleAnnounceInput(ctx: Context, env: Env, text: string):
     }
 
     await ctx.reply(
-      `✅ Игра #${created.gameId} создана.\nРазослано ${sent} из ${players.players.length} зарегистрированных.\n\nСтарт игры: /admin → Игры → Старт игры`,
+      `✅ Игра #${created.gameId} создана.\nРазослано ${sent} из ${players.players.length} зарегистрированных.\n\n` +
+        `⚠️ Запись только через *новое* сообщение с кнопками для игры #${created.gameId} (старые анонсы — другой номер игры).\n\n` +
+        `Старт: 🔧 Админ → Игры → Старт игры → кнопка с «N/… запис.»`,
+      { parse_mode: 'Markdown' },
     );
     return true;
   }
@@ -317,7 +320,8 @@ export async function listAnnouncedForStart(ctx: Context, env: Env): Promise<voi
       maxPlayers: sum.maxPlayers ?? g.max_players,
     });
   }
-  await ctx.reply('▶️ Выберите игру для старта (в кнопке — сколько записалось):', {
+  withCounts.sort((a, b) => b.yesCount - a.yesCount || a.date - b.date);
+  await ctx.reply('▶️ Стартуйте игру, где на кнопке есть записи (например «2/8 запис.»):', {
     reply_markup: announceGamesKeyboard(withCounts),
   });
 }

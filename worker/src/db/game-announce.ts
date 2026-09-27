@@ -2,6 +2,20 @@ import type { SqlStorage } from '@cloudflare/workers-types';
 import type { Game, Player } from '../types';
 import { firstRow } from './query-helpers';
 
+function gameRsvpsHasCompositePrimaryKey(sql: SqlStorage): boolean {
+  try {
+    const pkCols = [
+      ...sql
+        .exec(`SELECT name, pk FROM pragma_table_info('game_rsvps') ORDER BY pk`)
+        .toArray(),
+    ] as Array<{ name: string; pk: number }>;
+    const names = pkCols.filter((c) => c.pk > 0).map((c) => c.name);
+    return names.length === 2 && names[0] === 'game_id' && names[1] === 'player_id';
+  } catch {
+    return false;
+  }
+}
+
 /** Без PRIMARY KEY UPSERT не работает — дубли RSVP и сломанная очередь. */
 export function migrateGameRsvpsTable(sql: SqlStorage): void {
   try {
@@ -10,7 +24,7 @@ export function migrateGameRsvpsTable(sql: SqlStorage): void {
       "SELECT sql FROM sqlite_master WHERE type='table' AND name='game_rsvps'",
     );
     if (!master?.sql) return;
-    if (master.sql.includes('PRIMARY KEY (game_id, player_id)')) return;
+    if (gameRsvpsHasCompositePrimaryKey(sql)) return;
 
     sql.exec('PRAGMA foreign_keys = OFF');
     sql.exec(`
@@ -290,12 +304,32 @@ export function startAnnouncedGame(
       "SELECT COUNT(*) as c FROM game_rsvps WHERE game_id = ? AND response = 'yes'",
       gameId,
     )?.c ?? 0;
+    const otherGames = [
+      ...sql
+        .exec(
+          `SELECT g.id as game_id, COUNT(*) as yes_count
+           FROM game_rsvps r
+           JOIN games g ON g.id = r.game_id
+           WHERE r.response = 'yes'
+             AND g.status IN ('announced', 'registration_full')
+             AND g.id != ?
+           GROUP BY g.id
+           HAVING yes_count > 0
+           ORDER BY yes_count DESC`,
+          gameId,
+        )
+        .toArray(),
+    ] as Array<{ game_id: number; yes_count: number }>;
+    const hint =
+      otherGames.length > 0
+        ? `\n\nЗаписи «Участвую» на другие игры: ${otherGames.map((g) => `#${g.game_id} (${g.yes_count} чел.)`).join(', ')}. Стартуйте ту, где на кнопке «N/… запис.»`
+        : '';
     return {
       ok: false,
       error:
         yesOnly > 0
-          ? `На игру #${gameId} есть ${yesOnly} RSVP, но состав не собрался (нет связи с профилем игрока). Сделайте новый анонс.`
-          : `На игру #${gameId} никто не нажал «Участвую».`,
+          ? `На игру #${gameId} есть ${yesOnly} RSVP, но состав не собрался. Сделайте новый анонс.${hint}`
+          : `На игру #${gameId} никто не нажал «Участвую».${hint}`,
     };
   }
   sql.exec("UPDATE games SET status = 'open' WHERE id = ?", gameId);
