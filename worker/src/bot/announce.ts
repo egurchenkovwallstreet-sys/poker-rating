@@ -237,8 +237,8 @@ export async function handleAnnounceInput(ctx: Context, env: Env, text: string):
 
   if (session.state === 'announce_max') {
     const maxPlayers = parseInt(text.replace(/\s/g, ''), 10);
-    if (Number.isNaN(maxPlayers) || maxPlayers < 1) {
-      await ctx.reply('Введите число от 1, например 8');
+    if (Number.isNaN(maxPlayers) || maxPlayers < 2) {
+      await ctx.reply('Минимум 2 места. Введите число от 2, например 8');
       return true;
     }
     const { scheduledDate, ticketPrice } = session.data;

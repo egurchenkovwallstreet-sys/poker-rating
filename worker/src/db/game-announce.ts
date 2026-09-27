@@ -2,17 +2,50 @@ import type { SqlStorage } from '@cloudflare/workers-types';
 import type { Game, Player } from '../types';
 import { firstRow } from './query-helpers';
 
-function gameRsvpsHasCompositePrimaryKey(sql: SqlStorage): boolean {
+function gameRsvpsPkColumnNames(sql: SqlStorage): string[] {
   try {
     const pkCols = [
       ...sql
         .exec(`SELECT name, pk FROM pragma_table_info('game_rsvps') ORDER BY pk`)
         .toArray(),
     ] as Array<{ name: string; pk: number }>;
-    const names = pkCols.filter((c) => c.pk > 0).map((c) => c.name);
-    return names.length === 2 && names[0] === 'game_id' && names[1] === 'player_id';
+    return pkCols.filter((c) => c.pk > 0).map((c) => c.name);
   } catch {
-    return false;
+    return [];
+  }
+}
+
+function gameRsvpsHasCompositePrimaryKey(sql: SqlStorage): boolean {
+  const names = gameRsvpsPkColumnNames(sql);
+  return names.length === 2 && names[0] === 'game_id' && names[1] === 'player_id';
+}
+
+/** Ошибочный UNIQUE/PK только на game_id → в игре может быть только 1 RSVP. */
+function dropBadGameRsvpsUniqueIndexes(sql: SqlStorage): void {
+  try {
+    const indexes = [
+      ...sql.exec("PRAGMA index_list('game_rsvps')").toArray(),
+    ] as Array<{ name: string; unique: number }>;
+    for (const idx of indexes) {
+      if (!idx.unique) continue;
+      const cols = [
+        ...sql.exec(`PRAGMA index_info('${idx.name}')`).toArray(),
+      ] as Array<{ name: string }>;
+      if (cols.length === 1 && cols[0].name === 'game_id') {
+        sql.exec(`DROP INDEX IF EXISTS "${idx.name}"`);
+      }
+    }
+  } catch (e) {
+    console.error('dropBadGameRsvpsUniqueIndexes:', e);
+  }
+}
+
+export function ensureGameRsvpsSchema(sql: SqlStorage): void {
+  migrateGameRsvpsTable(sql);
+  dropBadGameRsvpsUniqueIndexes(sql);
+  const pk = gameRsvpsPkColumnNames(sql);
+  if (pk.length === 1 && pk[0] === 'game_id') {
+    migrateGameRsvpsTable(sql);
   }
 }
 
@@ -88,6 +121,52 @@ export function listRegisteredPlayers(sql: SqlStorage): Player[] {
   ] as unknown as Player[];
 }
 
+/** Перед RSVP: нормальный лимит мест и открытая запись, если есть свободные места. */
+function normalizeAnnouncedGameForRsvp(sql: SqlStorage, gameId: number): Game | null {
+  ensureGameRsvpsSchema(sql);
+  let game = getGameById(sql, gameId);
+  if (!game) return null;
+  let max = Number(game.max_players);
+  if (!Number.isFinite(max) || max < 2) {
+    sql.exec('UPDATE games SET max_players = 8 WHERE id = ?', gameId);
+    game = getGameById(sql, gameId)!;
+  }
+  const yes = countRsvpYes(sql, gameId);
+  const cap = registrationCap(game);
+  if (game.status === 'registration_full' && yes < cap) {
+    sql.exec("UPDATE games SET status = 'announced' WHERE id = ?", gameId);
+    game = getGameById(sql, gameId)!;
+  }
+  return game;
+}
+
+function upsertRsvpYes(sql: SqlStorage, gameId: number, playerId: number, now: number): void {
+  const existing = firstRow<{ response: string }>(
+    sql,
+    'SELECT response FROM game_rsvps WHERE game_id = ? AND player_id = ?',
+    gameId,
+    playerId,
+  );
+  if (existing?.response === 'yes') return;
+  if (existing?.response === 'no') {
+    sql.exec(
+      `UPDATE game_rsvps SET response = 'yes', created_at = ?, queue_order = NULL
+       WHERE game_id = ? AND player_id = ?`,
+      now,
+      gameId,
+      playerId,
+    );
+    return;
+  }
+  sql.exec(
+    `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
+     VALUES (?, ?, 'yes', NULL, ?)`,
+    gameId,
+    playerId,
+    now,
+  );
+}
+
 export function createAnnouncedGame(
   sql: SqlStorage,
   scheduledDate: number,
@@ -95,7 +174,7 @@ export function createAnnouncedGame(
   maxPlayers: number,
   createdBy: number,
 ): number {
-  if (maxPlayers < 1) throw new Error('Нужен хотя бы 1 игрок');
+  if (maxPlayers < 2) throw new Error('Минимум 2 места на игру (введите например 8)');
   if (ticketPrice < 0) throw new Error('Билет не может быть отрицательным');
   const now = Date.now();
   sql.exec(
@@ -219,8 +298,8 @@ export function setGameRsvp(
   yesCount?: number;
   queueOrder?: number | null;
 } {
-  migrateGameRsvpsTable(sql);
-  const game = getGameById(sql, gameId);
+  ensureGameRsvpsSchema(sql);
+  const game = normalizeAnnouncedGameForRsvp(sql, gameId);
   if (!game) return { ok: false, error: 'Игра не найдена' };
   if (game.status === 'open' || game.status === 'finished' || game.status === 'draft') {
     return { ok: false, error: 'Запись на эту игру уже закрыта' };
@@ -265,40 +344,22 @@ export function setGameRsvp(
     return { ok: true, yesCount: countRsvpYes(sql, gameId), queueOrder: slot };
   }
 
-  if (yesCount >= registrationCap(game)) {
-    return { ok: false, error: 'Все места заняты' };
+  const capNow = registrationCap(game);
+  if (yesCount >= capNow) {
+    return { ok: false, error: `Все ${capNow} мест заняты` };
   }
 
   const yesBefore = countRsvpYes(sql, gameId);
 
-  if (existing?.response === 'no') {
-    sql.exec(
-      `UPDATE game_rsvps SET response = 'yes', created_at = ?, queue_order = NULL
-       WHERE game_id = ? AND player_id = ?`,
-      now,
-      gameId,
-      playerId,
-    );
-  } else if (!existing) {
-    sql.exec(
-      `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
-       VALUES (?, ?, 'yes', NULL, ?)`,
-      gameId,
-      playerId,
-      now,
-    );
-  } else {
-    sql.exec(
-      `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
-       VALUES (?, ?, 'yes', NULL, ?)
-       ON CONFLICT(game_id, player_id) DO UPDATE SET
-         response = 'yes',
-         created_at = excluded.created_at,
-         queue_order = NULL`,
-      gameId,
-      playerId,
-      now,
-    );
+  try {
+    upsertRsvpYes(sql, gameId, playerId, now);
+  } catch (e) {
+    console.error('upsertRsvpYes:', e);
+    return {
+      ok: false,
+      error:
+        'Не удалось записать в очередь (база). Админ: новый анонс. Участник: /register и снова «Участvую».',
+    };
   }
 
   dedupeGameRsvps(sql, gameId);
@@ -312,12 +373,13 @@ export function setGameRsvp(
     return {
       ok: false,
       error:
-        'Запись не сохранилась. /register и «Участvую» в новом анонсе (🆔 номер игры).',
+        `Запись не сохранилась (было ${yesBefore}, стало ${finalYesCount}). Новый анонс с 🆔 #${gameId}.`,
     };
   }
 
+  const gameFresh = getGameById(sql, gameId)!;
   let registrationClosed = false;
-  if (finalYesCount >= registrationCap(game)) {
+  if (finalYesCount >= registrationCap(gameFresh)) {
     sql.exec("UPDATE games SET status = 'registration_full' WHERE id = ?", gameId);
     registrationClosed = true;
   }
