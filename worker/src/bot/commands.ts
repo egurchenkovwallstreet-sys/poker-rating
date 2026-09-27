@@ -336,13 +336,16 @@ export function createBot(env: Env): Bot {
         };
         orphansRemoved: number;
         reseeded: boolean;
+        demoGames: number;
       }>(env, { action: 'repairAndRefreshStats', createdBy: ctx.from!.id });
       const s = res.summary;
       const extra =
         res.orphansRemoved > 0
           ? `\n🧹 Удалено «пустых» игр без результатов: ${res.orphansRemoved}.`
           : '';
-      const seedLine = res.reseeded ? '\n🧪 Тестовые игры (/seeddemo) созданы заново.' : '';
+      const seedLine = res.reseeded
+        ? `\n🧪 Создано тестовых игр с результатами: ${res.demoGames} (цель: 30).`
+        : '';
       await ctx.reply(
         `✅ Статистика пересчитана.\n\n` +
           `Игр: ${s.finishedGames}, в окне 2 года: ${s.finishedGamesInStats}\n` +

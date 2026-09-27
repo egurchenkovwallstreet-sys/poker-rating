@@ -297,9 +297,9 @@ export async function fetchPublicStats(): Promise<PublicStatsSnapshot> {
   for (let attempt = 0; attempt < PUBLIC_STATS_ATTEMPTS; attempt++) {
     if (attempt > 0) await sleep(400 * attempt);
     try {
-      const res = await fetch(`${API_URL}/api/public/stats`, {
+      const res = await fetch(`${API_URL}/api/public/stats?t=${Date.now()}`, {
         method: 'GET',
-        cache: 'default',
+        cache: 'no-store',
         mode: 'cors',
       });
       if (res.status === 503 && attempt < PUBLIC_STATS_ATTEMPTS - 1) continue;

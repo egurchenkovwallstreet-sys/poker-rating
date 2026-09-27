@@ -132,6 +132,7 @@ export class PokerRoom implements DurableObject {
             summary: db.getClubStatsSummary(this.sql),
             orphansRemoved: repair.orphansRemoved,
             reseeded: repair.reseeded,
+            demoGames: repair.demoGames,
           });
         }
         case 'clearDemoGames': {

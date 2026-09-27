@@ -31,7 +31,7 @@ app.get('/api/public/stats', async (c) => {
     const res = await callDo<{ ok: boolean; snapshot: PublicStatsSnapshot }>(c.env, {
       action: 'getPublicStatsSnapshot',
     });
-    c.header('Cache-Control', 'public, max-age=300');
+    c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
     return c.json(res.snapshot);
   } catch (e) {
     console.error('public stats:', e);

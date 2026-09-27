@@ -126,17 +126,24 @@ export function deleteFinishedGamesWithoutResults(sql: SqlStorage): number {
 export function repairClubStatsData(
   sql: SqlStorage,
   reseedDemoBy?: number,
-): { orphansRemoved: number; reseeded: boolean } {
+): { orphansRemoved: number; reseeded: boolean; demoGames: number } {
   migrateGamesTable(sql);
   const orphansRemoved = deleteFinishedGamesWithoutResults(sql);
   repairFinishedGameDates(sql);
   let reseeded = false;
-  if (reseedDemoBy != null && getOverall(sql).length === 0) {
+  if (reseedDemoBy != null) {
     seedDemo(sql, reseedDemoBy);
     reseeded = true;
   }
   refreshStatsSnapshot(sql);
-  return { orphansRemoved, reseeded };
+  const demoGames =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(*) as c FROM games g
+       WHERE g.status = 'finished' AND g.is_demo = 1
+         AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)`,
+    )?.c ?? 0;
+  return { orphansRemoved, reseeded, demoGames };
 }
 
 /** Игры с результатами, но дата вне окна 2 года — подставить created_at (часто после старых seed). */
@@ -436,17 +443,19 @@ export function getGameWithResults(sql: SqlStorage, gameId: number): GameWithRes
 
 export function getLastGame(sql: SqlStorage): GameWithResults | null {
   migrateNormalizeGameDates(sql);
+  migrateGamesTable(sql);
   const since = statsSinceMs();
-  const game = firstRow<Game>(
-    sql,
-    `SELECT g.* FROM games g
+  const baseSql = `SELECT g.* FROM games g
      WHERE g.status = 'finished'
-       AND ${SQL_GAME_IN_STATS}
-       AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)
-     ORDER BY ${SQL_GAME_DATE_MS} DESC
-     LIMIT 1`,
+       AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)`;
+  let game = firstRow<Game>(
+    sql,
+    `${baseSql} AND ${SQL_GAME_IN_STATS} ORDER BY ${SQL_GAME_DATE_MS} DESC LIMIT 1`,
     since,
   );
+  if (!game) {
+    game = firstRow<Game>(sql, `${baseSql} ORDER BY ${SQL_GAME_DATE_MS} DESC LIMIT 1`);
+  }
   if (!game) return null;
   return getGameWithResults(sql, game.id);
 }
@@ -652,28 +661,21 @@ export function refreshStatsSnapshot(sql: SqlStorage): void {
 }
 
 export function getPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
-  const read = (): PublicStatsSnapshot | null => {
-    const row = firstRow<{ payload: string }>(sql, 'SELECT payload FROM stats_snapshot WHERE id = 1');
-    if (!row?.payload) return null;
-    return JSON.parse(row.payload) as PublicStatsSnapshot;
-  };
-
-  let snap = read();
-  const needsRebuild =
-    !snap ||
-    (snap.club.finishedGames > 0 && snap.overall.length === 0 && snap.club.playersInRating === 0);
-
-  if (needsRebuild) {
-    deleteFinishedGamesWithoutResults(sql);
-    repairFinishedGameDates(sql);
-    refreshStatsSnapshot(sql);
-    snap = read();
+  migrateGamesTable(sql);
+  deleteFinishedGamesWithoutResults(sql);
+  repairFinishedGameDates(sql);
+  const live = buildPublicStatsSnapshot(sql);
+  try {
+    sql.exec(
+      `INSERT INTO stats_snapshot (id, payload, updated_at) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+      JSON.stringify(live),
+      live.updatedAt,
+    );
+  } catch (e) {
+    console.error('stats_snapshot persist:', e);
   }
-  if (!snap) {
-    repairFinishedGameDates(sql);
-    return buildPublicStatsSnapshot(sql);
-  }
-  return snap;
+  return live;
 }
 
 export function listDraftGames(sql: SqlStorage): Game[] {
@@ -742,10 +744,19 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
   }));
 }
 
-export function getOverall(sql: SqlStorage): OverallStatRow[] {
-  migrateNormalizeGameDates(sql);
-  const since = statsSinceMs();
-  const rows = [
+function queryOverallRows(sql: SqlStorage, since: number, dateFilter: boolean): Array<{
+  player_id: number;
+  name: string;
+  games_count: number;
+  total_profit: number;
+  total_buyin: number;
+  wins: number;
+}> {
+  const whereDate = dateFilter
+    ? `g.status = 'finished' AND ${SQL_GAME_IN_STATS}`
+    : `g.status = 'finished'`;
+  const params = dateFilter ? [since] : [];
+  return [
     ...sql
       .exec(
         `SELECT
@@ -758,10 +769,10 @@ export function getOverall(sql: SqlStorage): OverallStatRow[] {
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
          LEFT JOIN players p ON p.id = gr.player_id
-         WHERE g.status = 'finished' AND ${SQL_GAME_IN_STATS}
+         WHERE ${whereDate}
          GROUP BY gr.player_id, p.name
          ORDER BY total_profit DESC`,
-        since,
+        ...params,
       )
       .toArray(),
   ] as Array<{
@@ -772,6 +783,25 @@ export function getOverall(sql: SqlStorage): OverallStatRow[] {
     total_buyin: number;
     wins: number;
   }>;
+}
+
+export function getOverall(sql: SqlStorage): OverallStatRow[] {
+  migrateNormalizeGameDates(sql);
+  migrateGamesTable(sql);
+  const since = statsSinceMs();
+  let rows = queryOverallRows(sql, since, true);
+  if (rows.length === 0) {
+    const withResults =
+      firstRow<{ c: number }>(
+        sql,
+        `SELECT COUNT(*) as c FROM games g
+         WHERE g.status = 'finished'
+           AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)`,
+      )?.c ?? 0;
+    if (withResults > 0) {
+      rows = queryOverallRows(sql, since, false);
+    }
+  }
 
   return rows.map((r, i) => ({
     player_id: r.player_id,
@@ -931,15 +961,27 @@ export function clearSession(sql: SqlStorage, userId: number): void {
 }
 
 /** Удалить тестовые игры (только когда скажете убрать seed). */
-export function clearDemoGames(sql: SqlStorage): number {
+export function clearDemoGames(sql: SqlStorage, refreshAfter = true): number {
   const ids = [
     ...sql.exec("SELECT id FROM games WHERE is_demo = 1").toArray(),
   ] as Array<{ id: number }>;
   for (const { id } of ids) {
     deleteGame(sql, id);
   }
-  refreshStatsSnapshot(sql);
+  if (refreshAfter) refreshStatsSnapshot(sql);
   return ids.length;
+}
+
+export const DEMO_FINISHED_GAMES_TARGET = 30;
+
+function countGameResultRows(sql: SqlStorage, gameId: number): number {
+  return (
+    firstRow<{ c: number }>(
+      sql,
+      'SELECT COUNT(*) as c FROM game_results WHERE game_id = ?',
+      gameId,
+    )?.c ?? 0
+  );
 }
 
 /** Тестовые игроки (без telegram_id) и завершённые игры с результатами (Σ profit = 0). */
@@ -950,6 +992,9 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
   linkedAdmin: boolean;
   errors: string[];
 } {
+  migrateGamesTable(sql);
+  clearDemoGames(sql, false);
+
   const names = ['Демо Иван', 'Демо Мария', 'Демо Олег', 'Демо Петр', 'Демо Саша', 'Демо Катя'];
   const playerIds: number[] = [];
   for (const name of names) {
@@ -1005,11 +1050,11 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
     return [registered.id, ...withoutSelf].slice(0, 6);
   };
 
-  const gameDates = demoGameTimestamps(gameSets.length);
+  const gameDates = demoGameTimestamps(DEMO_FINISHED_GAMES_TARGET);
   let gamesCreated = 0;
   const errors: string[] = [];
-  for (let g = 0; g < gameSets.length; g++) {
-    const set = gameSets[g];
+  for (let g = 0; g < DEMO_FINISHED_GAMES_TARGET; g++) {
+    const set = gameSets[g % gameSets.length];
     const subsetIds = rosterIds();
     const unique = new Set(subsetIds);
     if (unique.size !== subsetIds.length) {
@@ -1020,6 +1065,12 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
     for (const [idx, buyin, payout] of set) {
       if (idx >= subsetIds.length) continue;
       addOrUpdateResult(sql, gameId, subsetIds[idx], buyin, payout);
+    }
+    const resultRows = countGameResultRows(sql, gameId);
+    if (resultRows === 0) {
+      errors.push(`Игра ${g + 1}: нет строк результатов`);
+      deleteGame(sql, gameId);
+      continue;
     }
     const fin = finishGame(sql, gameId);
     if (fin.ok) {
