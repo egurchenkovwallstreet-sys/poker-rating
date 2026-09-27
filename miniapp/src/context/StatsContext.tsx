@@ -21,6 +21,37 @@ import {
 
 type LoadState = 'loading' | 'ready' | 'error';
 
+const SNAPSHOT_CACHE_KEY = 'poker_rating_public_stats_v2';
+
+function readSnapshotCache(): PublicStatsSnapshot | null {
+  const tryParse = (raw: string | null): PublicStatsSnapshot | null => {
+    if (!raw) return null;
+    try {
+      const data = JSON.parse(raw) as PublicStatsSnapshot;
+      if (!Array.isArray(data.overall) || data.overall.length === 0) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  };
+  try {
+    return tryParse(sessionStorage.getItem(SNAPSHOT_CACHE_KEY)) ?? tryParse(localStorage.getItem(SNAPSHOT_CACHE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function writeSnapshotCache(data: PublicStatsSnapshot): void {
+  if (!Array.isArray(data.overall) || data.overall.length === 0) return;
+  const raw = JSON.stringify(data);
+  try {
+    sessionStorage.setItem(SNAPSHOT_CACHE_KEY, raw);
+    localStorage.setItem(SNAPSHOT_CACHE_KEY, raw);
+  } catch {
+    /* ignore */
+  }
+}
+
 interface StatsContextValue {
   lastGame: LastGameData | null | undefined;
   overall: OverallStat[] | undefined;
@@ -44,42 +75,68 @@ function monthStatsFor(snapshot: PublicStatsSnapshot, monthKey: string): MonthSt
   return Array.isArray(stats) ? stats : [];
 }
 
+function applySnapshotToState(
+  data: PublicStatsSnapshot,
+  setSnapshot: (d: PublicStatsSnapshot) => void,
+  setMonthState: (m: string) => void,
+): void {
+  setSnapshot(data);
+  const defaultMonth =
+    data.months.includes(currentMonth()) ? currentMonth() : data.months[0] ?? currentMonth();
+  setMonthState(defaultMonth);
+}
+
 export function StatsProvider({ children }: { children: ReactNode }) {
-  const [snapshot, setSnapshot] = useState<PublicStatsSnapshot | null>(null);
-  const [month, setMonthState] = useState(currentMonth());
+  const initialCacheRef = useRef(readSnapshotCache());
+  const initialCache = initialCacheRef.current;
+  const [snapshot, setSnapshot] = useState<PublicStatsSnapshot | null>(initialCache);
+  const [month, setMonthState] = useState(() => {
+    if (initialCache?.months.includes(currentMonth())) return currentMonth();
+    return initialCache?.months[0] ?? currentMonth();
+  });
   const [error, setError] = useState<string | null>(null);
-  const [state, setState] = useState<LoadState>('loading');
+  const [state, setState] = useState<LoadState>(initialCache ? 'ready' : 'loading');
   const loadSeq = useRef(0);
-  const hasLoaded = useRef(false);
+  const snapshotRef = useRef<PublicStatsSnapshot | null>(initialCache);
 
-  const applySnapshot = useCallback((data: PublicStatsSnapshot) => {
-    setSnapshot(data);
-    const defaultMonth =
-      data.months.includes(currentMonth()) ? currentMonth() : data.months[0] ?? currentMonth();
-    setMonthState(defaultMonth);
-  }, []);
-
-  const loadAll = useCallback(async () => {
+  const loadAll = useCallback(async (background = false) => {
     const seq = ++loadSeq.current;
     setError(null);
-    if (!hasLoaded.current) setState('loading');
+    if (!background && !snapshotRef.current) setState('loading');
 
     try {
       const data = await api.getPublicStats();
       if (seq !== loadSeq.current) return;
-      applySnapshot(data);
-      hasLoaded.current = true;
+      if (!Array.isArray(data.overall) || data.overall.length === 0) {
+        if (snapshotRef.current) {
+          setState('ready');
+          return;
+        }
+        throw new Error('API_EMPTY');
+      }
+      applySnapshotToState(data, setSnapshot, setMonthState);
+      snapshotRef.current = data;
+      writeSnapshotCache(data);
       setState('ready');
     } catch (e: unknown) {
       if (seq !== loadSeq.current) return;
       const code = e instanceof Error ? e.message : '';
-      setError(code ? apiErrorMessage(code) : 'Не удалось загрузить данные');
-      if (!hasLoaded.current) setState('error');
+      if (snapshotRef.current) {
+        setError(
+          code === 'API_EMPTY'
+            ? 'Сервер отдал пусто — показана сохранённая статистика.'
+            : 'Не удалось обновить — показана сохранённая статистика.',
+        );
+        setState('ready');
+        return;
+      }
+      setError(code === 'API_EMPTY' ? 'Статистика пуста. Админ: /refreshstats в боте.' : apiErrorMessage(code));
+      setState('error');
     }
-  }, [applySnapshot]);
+  }, []);
 
   useEffect(() => {
-    loadAll();
+    loadAll(Boolean(initialCacheRef.current));
   }, [loadAll]);
 
   const setMonth = useCallback((m: string) => {
@@ -87,11 +144,23 @@ export function StatsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const reload = useCallback(() => {
-    loadAll();
+    loadAll(false);
   }, [loadAll]);
 
   const getProfile = useCallback(
-    (playerId: number) => snapshot?.profiles[String(playerId)],
+    (playerId: number) => {
+      const fromSnap = snapshot?.profiles[String(playerId)];
+      if (fromSnap) return fromSnap;
+      const row = snapshot?.overall?.find((p) => p.player_id === playerId);
+      if (!row) return undefined;
+      return {
+        player: { id: row.player_id, name: row.name },
+        games_count: row.games_count,
+        total_profit: row.total_profit,
+        chart: [],
+        history: [],
+      };
+    },
     [snapshot],
   );
 

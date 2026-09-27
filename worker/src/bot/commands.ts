@@ -161,7 +161,7 @@ export function createBot(env: Env): Bot {
       await ctx.reply('Сначала зарегистрируйтесь — кнопка «Регистрация» внизу.');
       return;
     }
-    const summary = await callDo<{
+    let summary = await callDo<{
       ok: boolean;
       summary: {
         finishedGames: number;
@@ -170,7 +170,17 @@ export function createBot(env: Env): Bot {
         lastGamePlayers: number;
       };
     }>(env, { action: 'getClubStatsSummary' });
-    const s = summary.summary;
+    let s = summary.summary;
+    if (s.finishedGames > 0 && s.playersInRating === 0 && checkAdmin(ctx.from!.id)) {
+      const repair = await callDo<{
+        ok: boolean;
+        summary: typeof s;
+        orphansRemoved: number;
+        reseeded: boolean;
+        demoGames: number;
+      }>(env, { action: 'repairAndRefreshStats', createdBy: ctx.from!.id });
+      s = repair.summary;
+    }
     let dbLine =
       s.finishedGames > 0
         ? `В базе: ${s.finishedGames} завершённых игр (в окне 2 года: ${s.finishedGamesInStats}, в рейтинге: ${s.playersInRating} игроков).\nПоследняя игра: ${s.lastGamePlayers} участников.\n\n`
@@ -553,8 +563,8 @@ export function createBot(env: Env): Bot {
 
     if (data === 'admin:seeddemo') {
       if (!checkAdmin(userId)) return;
+      await ctx.answerCallbackQuery({ text: 'Создаю тестовые игры…' });
       await runSeedDemo(ctx);
-      await ctx.answerCallbackQuery();
       return;
     }
 

@@ -652,28 +652,56 @@ export function buildPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
 export function refreshStatsSnapshot(sql: SqlStorage): void {
   repairFinishedGameDates(sql);
   const payload = buildPublicStatsSnapshot(sql);
-  sql.exec(
-    `INSERT INTO stats_snapshot (id, payload, updated_at) VALUES (1, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-    JSON.stringify(payload),
-    payload.updatedAt,
-  );
+  if (payload.overall.length > 0) {
+    persistStatsSnapshot(sql, payload);
+    return;
+  }
+  const prev = readPersistedStatsSnapshot(sql);
+  if (prev && prev.overall.length > 0) {
+    return;
+  }
+  persistStatsSnapshot(sql, payload);
 }
 
-export function getPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
-  migrateGamesTable(sql);
-  deleteFinishedGamesWithoutResults(sql);
-  repairFinishedGameDates(sql);
-  const live = buildPublicStatsSnapshot(sql);
+function readPersistedStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot | null {
+  const row = firstRow<{ payload: string }>(sql, 'SELECT payload FROM stats_snapshot WHERE id = 1');
+  if (!row?.payload) return null;
+  try {
+    return JSON.parse(row.payload) as PublicStatsSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+function persistStatsSnapshot(sql: SqlStorage, payload: PublicStatsSnapshot): void {
   try {
     sql.exec(
       `INSERT INTO stats_snapshot (id, payload, updated_at) VALUES (1, ?, ?)
        ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
-      JSON.stringify(live),
-      live.updatedAt,
+      JSON.stringify(payload),
+      payload.updatedAt,
     );
   } catch (e) {
     console.error('stats_snapshot persist:', e);
+  }
+}
+
+/** Mini App: только чтение. Не удаляем игры и не затираем снимок пустым ответом. */
+export function getPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
+  migrateGamesTable(sql);
+  const cached = readPersistedStatsSnapshot(sql);
+  if (cached && Array.isArray(cached.overall) && cached.overall.length > 0) {
+    return cached;
+  }
+
+  repairFinishedGameDates(sql);
+  const live = buildPublicStatsSnapshot(sql);
+  if (live.overall.length > 0) {
+    persistStatsSnapshot(sql, live);
+    return live;
+  }
+  if (cached) {
+    return cached;
   }
   return live;
 }
