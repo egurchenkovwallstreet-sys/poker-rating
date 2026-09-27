@@ -418,6 +418,52 @@ export function createBot(env: Env): Bot {
     await startAnnounceWizard(ctx, env);
   });
 
+  bot.command('rsvpdebug', async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
+    const id = parseInt(ctx.match?.trim() || '', 10);
+    if (isNaN(id)) return ctx.reply('Использование: /rsvpdebug <номер игры из 🆔 #…>');
+    const res = await callDo<{
+      ok: boolean;
+      debug: {
+        game: { id: number; status: string; max_players: number } | null;
+        pkColumns: string[];
+        badGameIdUnique: boolean;
+        yesCount: number;
+        yesRows: Array<{ player_id: number; name: string; created_at: number; queue_order: number | null }>;
+        otherAnnouncedWithYes: Array<{ game_id: number; yes_count: number }>;
+        tableSql: string | null;
+      };
+    }>(env, { action: 'getRsvpDebug', gameId: id });
+    const d = res.debug;
+    if (!d.game) {
+      await ctx.reply(`Игра #${id} не найдена.`);
+      return;
+    }
+    const queue =
+      d.yesRows.length > 0
+        ? d.yesRows
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.name} (player_id ${r.player_id}, created ${new Date(r.created_at).toISOString()})`,
+            )
+            .join('\n')
+        : '(пусто)';
+    const others =
+      d.otherAnnouncedWithYes.length > 0
+        ? d.otherAnnouncedWithYes.map((g) => `#${g.game_id}: ${g.yes_count}`).join(', ')
+        : 'нет';
+    const ddl = d.tableSql ? d.tableSql.replace(/\s+/g, ' ').slice(0, 120) : '?';
+    await ctx.reply(
+      `🔍 RSVP debug #${id}\n` +
+        `status: ${d.game.status}, max_players: ${d.game.max_players}\n` +
+        `PK: [${d.pkColumns.join(', ')}], bad UNIQUE(game_id): ${d.badGameIdUnique ? 'ДА' : 'нет'}\n` +
+        `yes на этой игре: ${d.yesCount}\n` +
+        `yes на других анонсах: ${others}\n\n` +
+        `Очередь:\n${queue}\n\n` +
+        `DDL: ${ddl}…`,
+    );
+  });
+
   bot.command('results', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
     await listOpenGamesForResults(ctx, env);

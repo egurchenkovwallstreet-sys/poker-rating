@@ -354,7 +354,8 @@ export async function handleGameRsvp(
   }>(env, { action: 'listRsvpYesWithQueue', gameId });
 
   if (response === 'yes') {
-    const me = queueRes.entries?.find((e) => e.player_id === playerRes.player!.id);
+    const pid = Number(playerRes.player!.id);
+    const me = queueRes.entries?.find((e) => Number(e.player_id) === pid);
     if (!me) {
       await ctx.answerCallbackQuery({
         text: `Вы не в очереди игры #${gameId}. Нужен свежий анонс с 🆔 #${gameId}.`,
@@ -369,14 +370,16 @@ export async function handleGameRsvp(
       return;
     }
     const spot = me.queue_order;
-    const cap = game.max_players > 0 ? game.max_players : queueRes.entries.length;
+    const totalYes = queueRes.entries.length;
+    const cap = game.max_players > 0 ? game.max_players : Math.max(totalYes, 8);
     const queueLine = queueRes.entries.map((e) => `${e.queue_order}. ${e.name}`).join(', ');
     await ctx.answerCallbackQuery({
-      text: `Игра #${gameId}: место ${spot} из ${cap}`,
+      text: `Игра #${gameId}: место ${spot} из ${cap} (записано: ${totalYes})`,
       show_alert: true,
     });
     const short =
-      `✅ ${playerRes.player.name} — место ${spot} на игре #${gameId}.\n` + `Очередь: ${queueLine}`;
+      `✅ ${playerRes.player.name} — место ${spot} на игре #${gameId} (всего записано: ${totalYes}).\n` +
+      `Очередь: ${queueLine}`;
     await notifyAllRegistered(ctx.api, env, short);
     await refreshClickerInviteMessage(ctx, env, gameId, game, telegramId);
   } else {
@@ -421,8 +424,27 @@ export async function listAnnouncedForStart(ctx: Context, env: Env): Promise<voi
     });
   }
   withCounts.sort((a, b) => b.yesCount - a.yesCount || a.date - b.date);
-  await ctx.reply('▶️ Стартуйте игру, где на кнопке есть записи (например «2/8 запис.»):', {
-    reply_markup: announceGamesKeyboard(withCounts),
+  const withRsvp = withCounts.filter((g) => g.yesCount > 0);
+  if (withRsvp.length === 0) {
+    const ids = withCounts.map((g) => `#${g.id}`).join(', ');
+    await ctx.reply(
+      `❌ Ни на одной анонсированной игре нет «Участvую» (${ids}).\n\n` +
+        `1) Сделайте *новый* анонс.\n` +
+        `2) Все жмут «Участvую» в сообщении с *🆔 Игра #…* (не в старых).\n` +
+        `3) Старт — кнопка с «N/… запис.» где N > 0.\n\n` +
+        `Диагностика: /rsvpdebug <номер игры>`,
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
+  const empty = withCounts.filter((g) => g.yesCount === 0);
+  let hint = '▶️ Стартуйте игру с записями (кнопка «N/… запис.», N > 0):';
+  if (empty.length > 0) {
+    hint += `\n_Без записей: ${empty.map((g) => `#${g.id}`).join(', ')} — не эти._`;
+  }
+  await ctx.reply(hint, {
+    parse_mode: 'Markdown',
+    reply_markup: announceGamesKeyboard(withRsvp),
   });
 }
 

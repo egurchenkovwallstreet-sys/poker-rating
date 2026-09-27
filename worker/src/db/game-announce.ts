@@ -17,7 +17,114 @@ function gameRsvpsPkColumnNames(sql: SqlStorage): string[] {
 
 function gameRsvpsHasCompositePrimaryKey(sql: SqlStorage): boolean {
   const names = gameRsvpsPkColumnNames(sql);
-  return names.length === 2 && names[0] === 'game_id' && names[1] === 'player_id';
+  return names.length === 2 && names.includes('game_id') && names.includes('player_id');
+}
+
+function hasUniqueIndexOnlyOnGameId(sql: SqlStorage): boolean {
+  try {
+    const indexes = [
+      ...sql.exec("PRAGMA index_list('game_rsvps')").toArray(),
+    ] as Array<{ name: string; unique: number }>;
+    for (const idx of indexes) {
+      if (!idx.unique) continue;
+      const cols = [
+        ...sql.exec(`PRAGMA index_info('${idx.name}')`).toArray(),
+      ] as Array<{ name: string }>;
+      if (cols.length === 1 && cols[0].name === 'game_id') return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function ensureClubMetaTable(sql: SqlStorage): void {
+  sql.exec(`CREATE TABLE IF NOT EXISTS club_meta (key TEXT PRIMARY KEY, value TEXT)`);
+}
+
+function getClubMeta(sql: SqlStorage, key: string): string | null {
+  ensureClubMetaTable(sql);
+  return firstRow<{ value: string }>(sql, 'SELECT value FROM club_meta WHERE key = ?', key)?.value ?? null;
+}
+
+function setClubMeta(sql: SqlStorage, key: string, value: string): void {
+  ensureClubMetaTable(sql);
+  sql.exec('INSERT OR REPLACE INTO club_meta (key, value) VALUES (?, ?)', key, value);
+}
+
+const GAME_RSVPS_SCHEMA_VERSION = '3';
+
+function gameRsvpsTableHealthy(sql: SqlStorage): boolean {
+  const master = firstRow<{ sql: string }>(
+    sql,
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='game_rsvps'",
+  );
+  if (!master?.sql) return false;
+  if (!gameRsvpsHasCompositePrimaryKey(sql)) return false;
+  if (hasUniqueIndexOnlyOnGameId(sql)) return false;
+  if (gameRsvpsPkColumnNames(sql).length === 1) return false;
+  return true;
+}
+
+function createGameRsvpsTableSql(tableName: string): string {
+  return `
+    CREATE TABLE ${tableName} (
+      game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      player_id INTEGER NOT NULL REFERENCES players(id),
+      response TEXT NOT NULL CHECK(response IN ('yes', 'no')),
+      queue_order INTEGER,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (game_id, player_id)
+    )
+  `;
+}
+
+/** Безопасная пересборка: не DROP исходной таблицы, пока данные не скопированы. */
+function rebuildGameRsvpsTableSafe(sql: SqlStorage): void {
+  const master = firstRow<{ sql: string }>(
+    sql,
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='game_rsvps'",
+  );
+  if (!master?.sql) {
+    sql.exec(createGameRsvpsTableSql('game_rsvps'));
+    sql.exec('CREATE INDEX IF NOT EXISTS idx_game_rsvps_game ON game_rsvps(game_id)');
+    return;
+  }
+
+  sql.exec('DROP TABLE IF EXISTS game_rsvps_new');
+  sql.exec('PRAGMA foreign_keys = OFF');
+  sql.exec(createGameRsvpsTableSql('game_rsvps_new'));
+  sql.exec(`
+    INSERT INTO game_rsvps_new (game_id, player_id, response, queue_order, created_at)
+    SELECT game_id, player_id, response, queue_order, created_at FROM game_rsvps
+    WHERE rowid IN (
+      SELECT MIN(rowid) FROM game_rsvps GROUP BY game_id, player_id
+    )
+  `);
+  const srcRows =
+    firstRow<{ c: number }>(sql, 'SELECT COUNT(*) as c FROM game_rsvps')?.c ?? 0;
+  const dstRows =
+    firstRow<{ c: number }>(sql, 'SELECT COUNT(*) as c FROM game_rsvps_new')?.c ?? 0;
+  const srcYes =
+    firstRow<{ c: number }>(
+      sql,
+      "SELECT COUNT(*) as c FROM game_rsvps WHERE response = 'yes'",
+    )?.c ?? 0;
+  const dstYes =
+    firstRow<{ c: number }>(
+      sql,
+      "SELECT COUNT(*) as c FROM game_rsvps_new WHERE response = 'yes'",
+    )?.c ?? 0;
+  if (srcYes > 0 && dstYes === 0) {
+    sql.exec('DROP TABLE IF EXISTS game_rsvps_new');
+    sql.exec('PRAGMA foreign_keys = ON');
+    console.error('rebuildGameRsvpsTableSafe: refused — would lose yes rows', { srcRows, dstRows, srcYes });
+    return;
+  }
+  sql.exec('DROP TABLE game_rsvps');
+  sql.exec('ALTER TABLE game_rsvps_new RENAME TO game_rsvps');
+  sql.exec('CREATE INDEX IF NOT EXISTS idx_game_rsvps_game ON game_rsvps(game_id)');
+  sql.exec('PRAGMA foreign_keys = ON');
 }
 
 /** Ошибочный UNIQUE/PK только на game_id → в игре может быть только 1 RSVP. */
@@ -41,49 +148,28 @@ function dropBadGameRsvpsUniqueIndexes(sql: SqlStorage): void {
 }
 
 export function ensureGameRsvpsSchema(sql: SqlStorage): void {
-  migrateGameRsvpsTable(sql);
-  dropBadGameRsvpsUniqueIndexes(sql);
-  const pk = gameRsvpsPkColumnNames(sql);
-  if (pk.length === 1 && pk[0] === 'game_id') {
-    migrateGameRsvpsTable(sql);
+  try {
+    const version = getClubMeta(sql, 'game_rsvps_schema');
+    const healthy = gameRsvpsTableHealthy(sql);
+    if (version === GAME_RSVPS_SCHEMA_VERSION && healthy) {
+      dropBadGameRsvpsUniqueIndexes(sql);
+      return;
+    }
+    rebuildGameRsvpsTableSafe(sql);
+    dropBadGameRsvpsUniqueIndexes(sql);
+    if (!gameRsvpsTableHealthy(sql)) {
+      rebuildGameRsvpsTableSafe(sql);
+      dropBadGameRsvpsUniqueIndexes(sql);
+    }
+    setClubMeta(sql, 'game_rsvps_schema', GAME_RSVPS_SCHEMA_VERSION);
+  } catch (e) {
+    console.error('ensureGameRsvpsSchema:', e);
   }
 }
 
-/** Без PRIMARY KEY UPSERT не работает — дубли RSVP и сломанная очередь. */
+/** @deprecated use ensureGameRsvpsSchema */
 export function migrateGameRsvpsTable(sql: SqlStorage): void {
-  try {
-    const master = firstRow<{ sql: string }>(
-      sql,
-      "SELECT sql FROM sqlite_master WHERE type='table' AND name='game_rsvps'",
-    );
-    if (!master?.sql) return;
-    if (gameRsvpsHasCompositePrimaryKey(sql)) return;
-
-    sql.exec('PRAGMA foreign_keys = OFF');
-    sql.exec(`
-      CREATE TABLE game_rsvps_migrated (
-        game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-        player_id INTEGER NOT NULL REFERENCES players(id),
-        response TEXT NOT NULL CHECK(response IN ('yes', 'no')),
-        queue_order INTEGER,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (game_id, player_id)
-      )
-    `);
-    sql.exec(`
-      INSERT INTO game_rsvps_migrated (game_id, player_id, response, queue_order, created_at)
-      SELECT game_id, player_id, response, queue_order, created_at FROM game_rsvps
-      WHERE rowid IN (
-        SELECT MIN(rowid) FROM game_rsvps GROUP BY game_id, player_id
-      )
-    `);
-    sql.exec('DROP TABLE game_rsvps');
-    sql.exec('ALTER TABLE game_rsvps_migrated RENAME TO game_rsvps');
-    sql.exec('CREATE INDEX IF NOT EXISTS idx_game_rsvps_game ON game_rsvps(game_id)');
-    sql.exec('PRAGMA foreign_keys = ON');
-  } catch (e) {
-    console.error('migrateGameRsvpsTable:', e);
-  }
+  ensureGameRsvpsSchema(sql);
 }
 
 export function getGameById(sql: SqlStorage, gameId: number): Game | null {
@@ -141,26 +227,16 @@ function normalizeAnnouncedGameForRsvp(sql: SqlStorage, gameId: number): Game | 
 }
 
 function upsertRsvpYes(sql: SqlStorage, gameId: number, playerId: number, now: number): void {
-  const existing = firstRow<{ response: string }>(
-    sql,
-    'SELECT response FROM game_rsvps WHERE game_id = ? AND player_id = ?',
-    gameId,
-    playerId,
-  );
-  if (existing?.response === 'yes') return;
-  if (existing?.response === 'no') {
-    sql.exec(
-      `UPDATE game_rsvps SET response = 'yes', created_at = ?, queue_order = NULL
-       WHERE game_id = ? AND player_id = ?`,
-      now,
-      gameId,
-      playerId,
-    );
-    return;
-  }
   sql.exec(
     `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
-     VALUES (?, ?, 'yes', NULL, ?)`,
+     VALUES (?, ?, 'yes', NULL, ?)
+     ON CONFLICT(game_id, player_id) DO UPDATE SET
+       response = 'yes',
+       created_at = CASE
+         WHEN game_rsvps.response = 'yes' THEN game_rsvps.created_at
+         ELSE excluded.created_at
+       END,
+       queue_order = NULL`,
     gameId,
     playerId,
     now,
@@ -391,7 +467,7 @@ export function startAnnouncedGame(
   sql: SqlStorage,
   gameId: number,
 ): { ok: true; roster: Player[] } | { ok: false; error: string } {
-  migrateGameRsvpsTable(sql);
+  ensureGameRsvpsSchema(sql);
   const game = getGameById(sql, gameId);
   if (!game) return { ok: false, error: 'Игра не найдена' };
   if (game.status !== 'announced' && game.status !== 'registration_full') {
@@ -515,8 +591,63 @@ export function listRsvpYesWithQueue(
   return rows.map((r, i) => ({
     queue_order: i + 1,
     name: r.name,
-    player_id: r.player_id,
+    player_id: r.r_player_id,
   }));
+}
+
+export function getRsvpDebugInfo(
+  sql: SqlStorage,
+  gameId: number,
+): {
+  game: Game | null;
+  pkColumns: string[];
+  tableSql: string | null;
+  badGameIdUnique: boolean;
+  yesRows: Array<{ player_id: number; name: string; created_at: number; queue_order: number | null }>;
+  yesCount: number;
+  otherAnnouncedWithYes: Array<{ game_id: number; yes_count: number }>;
+} {
+  ensureGameRsvpsSchema(sql);
+  const game = getGameById(sql, gameId);
+  const master = firstRow<{ sql: string }>(
+    sql,
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='game_rsvps'",
+  );
+  const yesRows = [
+    ...sql
+      .exec(
+        `SELECT r.player_id, r.created_at, r.queue_order,
+                COALESCE(p.name, 'Игрок #' || r.player_id) as name
+         FROM game_rsvps r
+         LEFT JOIN players p ON p.id = r.player_id
+         WHERE r.game_id = ? AND r.response = 'yes'
+         ORDER BY r.created_at ASC, r.player_id ASC`,
+        gameId,
+      )
+      .toArray(),
+  ] as Array<{ player_id: number; name: string; created_at: number; queue_order: number | null }>;
+  const otherAnnouncedWithYes = [
+    ...sql
+      .exec(
+        `SELECT g.id as game_id, COUNT(*) as yes_count
+         FROM game_rsvps r
+         JOIN games g ON g.id = r.game_id
+         WHERE r.response = 'yes'
+           AND g.status IN ('announced', 'registration_full')
+         GROUP BY g.id
+         ORDER BY yes_count DESC`,
+      )
+      .toArray(),
+  ] as Array<{ game_id: number; yes_count: number }>;
+  return {
+    game,
+    pkColumns: gameRsvpsPkColumnNames(sql),
+    tableSql: master?.sql ?? null,
+    badGameIdUnique: hasUniqueIndexOnlyOnGameId(sql),
+    yesRows,
+    yesCount: yesRows.length,
+    otherAnnouncedWithYes,
+  };
 }
 
 export function listOpenGames(sql: SqlStorage): Game[] {
