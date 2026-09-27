@@ -118,6 +118,10 @@ export class PokerRoom implements DurableObject {
         case 'refreshStatsSnapshot':
           db.refreshStatsSnapshot(this.sql);
           return json({ ok: true });
+        case 'repairAndRefreshStats': {
+          db.refreshStatsSnapshot(this.sql);
+          return json({ ok: true, summary: db.getClubStatsSummary(this.sql) });
+        }
         case 'getPlayer': {
           const profile = db.getPlayerProfile(this.sql, body.playerId);
           return json(profile ? { ok: true, profile } : { ok: false, error: 'Игрок не найден' }, profile ? 200 : 404);

@@ -164,6 +164,7 @@ export function createBot(env: Env): Bot {
       ok: boolean;
       summary: {
         finishedGames: number;
+        finishedGamesInStats: number;
         playersInRating: number;
         lastGamePlayers: number;
       };
@@ -171,12 +172,12 @@ export function createBot(env: Env): Bot {
     const s = summary.summary;
     let dbLine =
       s.finishedGames > 0
-        ? `В базе: ${s.finishedGames} завершённых игр (в рейтинге за 2 года: ${s.playersInRating} игроков).\nПоследняя игра: ${s.lastGamePlayers} участников.\n\n`
+        ? `В базе: ${s.finishedGames} завершённых игр (в окне 2 года: ${s.finishedGamesInStats}, в рейтинге: ${s.playersInRating} игроков).\nПоследняя игра: ${s.lastGamePlayers} участников.\n\n`
         : '⚠️ В базе пока нет завершённых игр. Админ: /seeddemo или введите результаты игры.\n\n';
     if (s.finishedGames > 0 && s.playersInRating === 0) {
       dbLine =
-        `⚠️ Игры есть (${s.finishedGames}), но рейтинг пуст — нужен deploy worker с fix.\n` +
-        `Админ: /statsdebug\n\n`;
+        `⚠️ Игры есть (${s.finishedGames}), но рейтинг пуст (в окне 2 года: ${s.finishedGamesInStats}).\n` +
+        `Админ: /refreshstats — пересчёт таблицы.\n\n`;
     }
     await ctx.reply(`${dbLine}👇 Откройте Mini App:`, {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
@@ -305,6 +306,27 @@ export function createBot(env: Env): Bot {
   }
 
   bot.command('seeddemo', runSeedDemo);
+
+  bot.command('refreshstats', async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
+    const res = await callDo<{
+      ok: boolean;
+      summary: {
+        finishedGames: number;
+        finishedGamesInStats: number;
+        playersInRating: number;
+        lastGamePlayers: number;
+      };
+    }>(env, { action: 'repairAndRefreshStats' });
+    const s = res.summary;
+    await ctx.reply(
+      `✅ Статистика пересчитана.\n\n` +
+        `Игр: ${s.finishedGames}, в окне 2 года: ${s.finishedGamesInStats}\n` +
+        `Игроков в рейтинге: ${s.playersInRating}\n` +
+        `Последняя игра: ${s.lastGamePlayers} чел.\n\n` +
+        `Mini App покажет ту же таблицу у всех участников.`,
+    );
+  });
 
   bot.command('statsdebug', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');

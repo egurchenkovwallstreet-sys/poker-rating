@@ -4,6 +4,7 @@ import {
   demoGameTimestamps,
   monthGameDateFilter,
   SQL_GAME_DATE_MS,
+  SQL_GAME_DATE_MS_GAMES,
   statsSinceMs,
 } from './stats-time';
 import type {
@@ -86,10 +87,35 @@ function migrateSchema(sql: SqlStorage): void {
 export function migrateNormalizeGameDates(sql: SqlStorage): void {
   try {
     sql.exec(
-      'UPDATE games SET date = date * 1000 WHERE date > 0 AND date < 100000000000',
+      'UPDATE games SET date = date * 1000 WHERE date > 0 AND date < 10000000000',
+    );
+    sql.exec(
+      'UPDATE games SET date = created_at WHERE (date IS NULL OR date <= 0) AND created_at > 0',
+    );
+    sql.exec(
+      'UPDATE games SET date = CAST(date / 1000 AS INTEGER) WHERE date > 100000000000000',
     );
   } catch (e) {
     console.error('migrateNormalizeGameDates:', e);
+  }
+}
+
+/** Игры с результатами, но дата вне окна 2 года — подставить created_at (часто после старых seed). */
+export function repairFinishedGameDates(sql: SqlStorage): void {
+  migrateNormalizeGameDates(sql);
+  const since = statsSinceMs();
+  try {
+    sql.exec(
+      `UPDATE games SET date = created_at
+       WHERE status = 'finished'
+         AND created_at >= ?
+         AND id IN (SELECT DISTINCT game_id FROM game_results)
+         AND ${SQL_GAME_DATE_MS_GAMES} < ?`,
+      since,
+      since,
+    );
+  } catch (e) {
+    console.error('repairFinishedGameDates:', e);
   }
 }
 
@@ -534,6 +560,7 @@ export function buildPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
 }
 
 export function refreshStatsSnapshot(sql: SqlStorage): void {
+  repairFinishedGameDates(sql);
   const payload = buildPublicStatsSnapshot(sql);
   sql.exec(
     `INSERT INTO stats_snapshot (id, payload, updated_at) VALUES (1, ?, ?)
@@ -544,16 +571,26 @@ export function refreshStatsSnapshot(sql: SqlStorage): void {
 }
 
 export function getPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
-  const row = firstRow<{ payload: string }>(sql, 'SELECT payload FROM stats_snapshot WHERE id = 1');
-  if (!row?.payload) {
+  const read = (): PublicStatsSnapshot | null => {
+    const row = firstRow<{ payload: string }>(sql, 'SELECT payload FROM stats_snapshot WHERE id = 1');
+    if (!row?.payload) return null;
+    return JSON.parse(row.payload) as PublicStatsSnapshot;
+  };
+
+  let snap = read();
+  const needsRebuild =
+    !snap ||
+    (snap.club.finishedGames > 0 && snap.overall.length === 0 && snap.club.playersInRating === 0);
+
+  if (needsRebuild) {
     refreshStatsSnapshot(sql);
-    const again = firstRow<{ payload: string }>(sql, 'SELECT payload FROM stats_snapshot WHERE id = 1');
-    if (!again?.payload) {
-      return buildPublicStatsSnapshot(sql);
-    }
-    return JSON.parse(again.payload) as PublicStatsSnapshot;
+    snap = read();
   }
-  return JSON.parse(row.payload) as PublicStatsSnapshot;
+  if (!snap) {
+    repairFinishedGameDates(sql);
+    return buildPublicStatsSnapshot(sql);
+  }
+  return snap;
 }
 
 export function listDraftGames(sql: SqlStorage): Game[] {

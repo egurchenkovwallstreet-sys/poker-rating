@@ -117,6 +117,7 @@ export type DoAction =
   | { action: 'getStatsBundle'; month: string }
   | { action: 'getPublicStatsSnapshot' }
   | { action: 'refreshStatsSnapshot' }
+  | { action: 'repairAndRefreshStats' }
   | { action: 'getPlayer'; playerId: number }
   | { action: 'getSession'; userId: number }
   | { action: 'setSession'; userId: number; state: string; data: Record<string, unknown> }

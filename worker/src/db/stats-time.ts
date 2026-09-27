@@ -9,7 +9,17 @@ export function statsSinceMs(nowMs: number = Date.now()): number {
  * Дата игры в БД: миллисекунды. Старые записи могли сохраниться в секундах — приводим в SQL.
  * Порог 1e11: секунды 2026 (~1.7e9) < 1e11; ms 2026 (~1.7e12) > 1e11.
  */
-export const SQL_GAME_DATE_MS = `(CASE WHEN g.date < 100000000000 THEN g.date * 1000 ELSE g.date END)`;
+function gameDateMsExpr(prefix: string): string {
+  return `(CASE
+  WHEN ${prefix}.date IS NULL OR ${prefix}.date <= 0 THEN ${prefix}.created_at
+  WHEN ${prefix}.date < 10000000000 THEN ${prefix}.date * 1000
+  ELSE ${prefix}.date
+END)`;
+}
+
+/** Секунды (< 1e10) → ms; иначе уже ms. Пустая date → created_at. */
+export const SQL_GAME_DATE_MS = gameDateMsExpr('g');
+export const SQL_GAME_DATE_MS_GAMES = gameDateMsExpr('games');
 
 /** Календарный месяц `YYYY-MM` в UTC. */
 export function monthRangeUtc(month: string): { start: number; end: number } {
