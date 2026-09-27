@@ -306,6 +306,18 @@ export function createAnnouncedGame(
   const row = sql.exec('SELECT id FROM games ORDER BY id DESC LIMIT 1').one() as { id: number };
   const gameId = row.id;
   ensureRsvpRegistrationsTable(sql);
+  // «Участvую» привязан к game_id. Переносим yes со старых анонсов, иначе старт новой игры = «никто не записался».
+  sql.exec(
+    `INSERT OR IGNORE INTO ${RSVP_TABLE} (game_id, player_id, response, created_at)
+     SELECT ?, r.player_id, r.response, r.created_at
+     FROM ${RSVP_TABLE} r
+     INNER JOIN games g ON g.id = r.game_id
+     WHERE g.status IN ('announced', 'registration_full')
+       AND g.id != ?
+       AND r.response = 'yes'`,
+    gameId,
+    gameId,
+  );
   sql.exec(
     `UPDATE games SET status = 'draft'
      WHERE status IN ('announced', 'registration_full') AND id != ?`,
