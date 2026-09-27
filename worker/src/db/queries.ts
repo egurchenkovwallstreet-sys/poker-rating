@@ -1,5 +1,5 @@
 import type { SqlStorage } from '@cloudflare/workers-types';
-import { ensureGameRsvpsSchema } from './game-announce';
+import { ensureGameRsvpsSchema, ensureRsvpRegistrationsTable } from './game-announce';
 import { firstRow } from './query-helpers';
 import {
   demoGameTimestamps,
@@ -61,6 +61,7 @@ function migrateSchema(sql: SqlStorage): void {
   }
   try {
     ensureGameRsvpsSchema(sql);
+    ensureRsvpRegistrationsTable(sql);
   } catch (e) {
     console.error('migrateGameRsvpsTable on init:', e);
   }

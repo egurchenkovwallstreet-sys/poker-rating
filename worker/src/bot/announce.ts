@@ -258,6 +258,8 @@ export async function handleAnnounceInput(ctx: Context, env: Env, text: string):
       createdBy: userId,
     });
 
+    const activeGameId = created.game?.id ?? created.gameId;
+
     const players = await callDo<{ ok: boolean; players: Player[] }>(env, {
       action: 'listRegisteredPlayers',
     });
@@ -269,11 +271,11 @@ export async function handleAnnounceInput(ctx: Context, env: Env, text: string):
       try {
         const msg = await ctx.api.sendMessage(p.telegram_id, inviteText, {
           parse_mode: 'Markdown',
-          reply_markup: gameRsvpKeyboard(created.gameId),
+          reply_markup: gameRsvpKeyboard(activeGameId),
         });
         await callDo(env, {
           action: 'saveInviteMessage',
-          gameId: created.gameId,
+          gameId: activeGameId,
           telegramId: p.telegram_id,
           messageId: msg.message_id,
         });
@@ -284,8 +286,8 @@ export async function handleAnnounceInput(ctx: Context, env: Env, text: string):
     }
 
     await ctx.reply(
-      `✅ Игра #${created.gameId} создана.\nРазослано ${sent} из ${players.players.length} зарегистрированных.\n\n` +
-        `⚠️ Запись только через *новое* сообщение с кнопками для игры #${created.gameId} (старые анонсы — другой номер игры).\n\n` +
+      `✅ Игра #${activeGameId} создана (старые анонсы закрыты).\nРазослано ${sent} из ${players.players.length} зарегистрированных.\n\n` +
+        `⚠️ «Участvую» только в *этом* сообщении с 🆔 #${activeGameId}.\n\n` +
         `Старт: 🔧 Админ → Игры → Старт игры → кнопка с «N/… запис.»`,
       { parse_mode: 'Markdown' },
     );

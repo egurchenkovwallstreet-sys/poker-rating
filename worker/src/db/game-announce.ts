@@ -2,6 +2,48 @@ import type { SqlStorage } from '@cloudflare/workers-types';
 import type { Game, Player } from '../types';
 import { firstRow } from './query-helpers';
 
+/** Единственная таблица записей «Участvую» (старая game_rsvps в проде могла быть битой). */
+const RSVP_TABLE = 'game_rsvp_registrations';
+
+export function ensureRsvpRegistrationsTable(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS ${RSVP_TABLE} (
+      game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+      player_id INTEGER NOT NULL REFERENCES players(id),
+      response TEXT NOT NULL CHECK(response IN ('yes', 'no')),
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (game_id, player_id)
+    )
+  `);
+  sql.exec(`CREATE INDEX IF NOT EXISTS idx_rsvp_reg_game ON ${RSVP_TABLE}(game_id)`);
+  const imported = getClubMeta(sql, 'rsvp_reg_imported');
+  if (imported !== '1') {
+    try {
+      sql.exec(`
+        INSERT OR IGNORE INTO ${RSVP_TABLE} (game_id, player_id, response, created_at)
+        SELECT game_id, player_id, response, created_at FROM game_rsvps
+        WHERE rowid IN (
+          SELECT MIN(rowid) FROM game_rsvps GROUP BY game_id, player_id
+        )
+      `);
+    } catch {
+      /* game_rsvps может отсутствовать */
+    }
+    setClubMeta(sql, 'rsvp_reg_imported', '1');
+  }
+}
+
+export function getLatestAnnouncedGameId(sql: SqlStorage): number | null {
+  return (
+    firstRow<{ id: number }>(
+      sql,
+      `SELECT id FROM games
+       WHERE status IN ('announced', 'registration_full')
+       ORDER BY id DESC LIMIT 1`,
+    )?.id ?? null
+  );
+}
+
 function gameRsvpsPkColumnNames(sql: SqlStorage): string[] {
   try {
     const pkCols = [
@@ -209,7 +251,7 @@ export function listRegisteredPlayers(sql: SqlStorage): Player[] {
 
 /** Перед RSVP: нормальный лимит мест и открытая запись, если есть свободные места. */
 function normalizeAnnouncedGameForRsvp(sql: SqlStorage, gameId: number): Game | null {
-  ensureGameRsvpsSchema(sql);
+  ensureRsvpRegistrationsTable(sql);
   let game = getGameById(sql, gameId);
   if (!game) return null;
   let max = Number(game.max_players);
@@ -228,15 +270,14 @@ function normalizeAnnouncedGameForRsvp(sql: SqlStorage, gameId: number): Game | 
 
 function upsertRsvpYes(sql: SqlStorage, gameId: number, playerId: number, now: number): void {
   sql.exec(
-    `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
-     VALUES (?, ?, 'yes', NULL, ?)
+    `INSERT INTO ${RSVP_TABLE} (game_id, player_id, response, created_at)
+     VALUES (?, ?, 'yes', ?)
      ON CONFLICT(game_id, player_id) DO UPDATE SET
        response = 'yes',
        created_at = CASE
-         WHEN game_rsvps.response = 'yes' THEN game_rsvps.created_at
+         WHEN ${RSVP_TABLE}.response = 'yes' THEN ${RSVP_TABLE}.created_at
          ELSE excluded.created_at
-       END,
-       queue_order = NULL`,
+       END`,
     gameId,
     playerId,
     now,
@@ -263,13 +304,21 @@ export function createAnnouncedGame(
     maxPlayers,
   );
   const row = sql.exec('SELECT id FROM games ORDER BY id DESC LIMIT 1').one() as { id: number };
-  return row.id;
+  const gameId = row.id;
+  ensureRsvpRegistrationsTable(sql);
+  sql.exec(
+    `UPDATE games SET status = 'draft'
+     WHERE status IN ('announced', 'registration_full') AND id != ?`,
+    gameId,
+  );
+  return gameId;
 }
 
 export function countRsvpYes(sql: SqlStorage, gameId: number): number {
+  ensureRsvpRegistrationsTable(sql);
   const row = sql
     .exec(
-      "SELECT COUNT(*) as c FROM game_rsvps WHERE game_id = ? AND response = 'yes'",
+      `SELECT COUNT(*) as c FROM ${RSVP_TABLE} WHERE game_id = ? AND response = 'yes'`,
       gameId,
     )
     .one() as { c: number };
@@ -290,12 +339,12 @@ export function listAnnouncedGames(sql: SqlStorage): Game[] {
 function dedupeGameRsvps(sql: SqlStorage, gameId: number): void {
   try {
     sql.exec(
-      `DELETE FROM game_rsvps
+      `DELETE FROM ${RSVP_TABLE}
        WHERE game_id = ? AND rowid IN (
-         SELECT r.rowid FROM game_rsvps r
+         SELECT r.rowid FROM ${RSVP_TABLE} r
          WHERE r.game_id = ?
            AND r.rowid > (
-             SELECT MIN(r2.rowid) FROM game_rsvps r2
+             SELECT MIN(r2.rowid) FROM ${RSVP_TABLE} r2
              WHERE r2.game_id = r.game_id AND r2.player_id = r.player_id
            )
        )`,
@@ -314,9 +363,10 @@ export function getRsvpQueueOrder(
   playerId: number,
 ): number | null {
   dedupeGameRsvps(sql, gameId);
+  ensureRsvpRegistrationsTable(sql);
   const me = firstRow<{ created_at: number; response: string }>(
     sql,
-    `SELECT created_at, response FROM game_rsvps
+    `SELECT created_at, response FROM ${RSVP_TABLE}
      WHERE game_id = ? AND player_id = ?
      ORDER BY rowid ASC LIMIT 1`,
     gameId,
@@ -326,7 +376,7 @@ export function getRsvpQueueOrder(
   const row = firstRow<{ ord: number }>(
     sql,
     `SELECT 1 + COUNT(*) as ord
-     FROM game_rsvps r
+     FROM ${RSVP_TABLE} r
      WHERE r.game_id = ? AND r.response = 'yes'
        AND (r.created_at < ? OR (r.created_at = ? AND r.player_id < ?))`,
     gameId,
@@ -340,26 +390,6 @@ export function getRsvpQueueOrder(
 /** Место в очереди = порядок первого «Участvую» (created_at), не MAX(queue_order). */
 export function renumberRsvpQueue(sql: SqlStorage, gameId: number): void {
   dedupeGameRsvps(sql, gameId);
-  const rows = [
-    ...sql
-      .exec(
-        `SELECT player_id FROM game_rsvps
-         WHERE game_id = ? AND response = 'yes'
-         ORDER BY created_at ASC, player_id ASC`,
-        gameId,
-      )
-      .toArray(),
-  ] as Array<{ player_id: number }>;
-  let order = 1;
-  for (const row of rows) {
-    sql.exec(
-      'UPDATE game_rsvps SET queue_order = ? WHERE game_id = ? AND player_id = ?',
-      order,
-      gameId,
-      row.player_id,
-    );
-    order++;
-  }
 }
 
 export function setGameRsvp(
@@ -374,33 +404,42 @@ export function setGameRsvp(
   yesCount?: number;
   queueOrder?: number | null;
 } {
-  ensureGameRsvpsSchema(sql);
+  ensureRsvpRegistrationsTable(sql);
   const game = normalizeAnnouncedGameForRsvp(sql, gameId);
   if (!game) return { ok: false, error: 'Игра не найдена' };
-  if (game.status === 'open' || game.status === 'finished' || game.status === 'draft') {
+  if (game.status === 'open' || game.status === 'finished') {
     return { ok: false, error: 'Запись на эту игру уже закрыта' };
+  }
+  if (game.status === 'draft') {
+    const latest = getLatestAnnouncedGameId(sql);
+    return {
+      ok: false,
+      error: latest
+        ? `Старое сообщение (игра #${gameId}). Запись только в анонсе 🆔 #${latest}.`
+        : `Игра #${gameId} закрыта. Дождитесь нового анонса от админа.`,
+    };
   }
 
   const now = Date.now();
-  const existing = firstRow<{ response: string; queue_order: number | null }>(
+  const existing = firstRow<{ response: string }>(
     sql,
-    'SELECT response, queue_order FROM game_rsvps WHERE game_id = ? AND player_id = ?',
+    `SELECT response FROM ${RSVP_TABLE} WHERE game_id = ? AND player_id = ?`,
     gameId,
     playerId,
   );
 
   if (response === 'no') {
     if (existing?.response === 'yes') {
-      sql.exec('DELETE FROM game_rsvps WHERE game_id = ? AND player_id = ?', gameId, playerId);
+      sql.exec(`DELETE FROM ${RSVP_TABLE} WHERE game_id = ? AND player_id = ?`, gameId, playerId);
       renumberRsvpQueue(sql, gameId);
       if (game.status === 'registration_full') {
         sql.exec("UPDATE games SET status = 'announced' WHERE id = ?", gameId);
       }
     } else {
       sql.exec(
-        `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
-         VALUES (?, ?, 'no', NULL, ?)
-         ON CONFLICT(game_id, player_id) DO UPDATE SET response = 'no', queue_order = NULL, created_at = excluded.created_at`,
+        `INSERT INTO ${RSVP_TABLE} (game_id, player_id, response, created_at)
+         VALUES (?, ?, 'no', ?)
+         ON CONFLICT(game_id, player_id) DO UPDATE SET response = 'no', created_at = excluded.created_at`,
         gameId,
         playerId,
         now,
@@ -443,7 +482,9 @@ export function setGameRsvp(
 
   const finalYesCount = countRsvpYes(sql, gameId);
   const slot = getRsvpQueueOrder(sql, gameId, playerId);
-  const inQueue = listRsvpYesWithQueue(sql, gameId).some((r) => r.player_id === playerId);
+  const inQueue = listRsvpYesWithQueue(sql, gameId).some(
+    (r) => Number(r.player_id) === Number(playerId),
+  );
 
   if (finalYesCount <= yesBefore || slot == null || !inQueue) {
     return {
@@ -467,7 +508,7 @@ export function startAnnouncedGame(
   sql: SqlStorage,
   gameId: number,
 ): { ok: true; roster: Player[] } | { ok: false; error: string } {
-  ensureGameRsvpsSchema(sql);
+  ensureRsvpRegistrationsTable(sql);
   const game = getGameById(sql, gameId);
   if (!game) return { ok: false, error: 'Игра не найдена' };
   if (game.status !== 'announced' && game.status !== 'registration_full') {
@@ -480,16 +521,12 @@ export function startAnnouncedGame(
   const cap = effectiveMaxPlayers(gameFresh, allYes.length);
   const roster = allYes.slice(0, cap);
   if (roster.length === 0) {
-    const yesOnly = firstRow<{ c: number }>(
-      sql,
-      "SELECT COUNT(*) as c FROM game_rsvps WHERE game_id = ? AND response = 'yes'",
-      gameId,
-    )?.c ?? 0;
+    const yesOnly = countRsvpYes(sql, gameId);
     const otherGames = [
       ...sql
         .exec(
           `SELECT g.id as game_id, COUNT(*) as yes_count
-           FROM game_rsvps r
+           FROM ${RSVP_TABLE} r
            JOIN games g ON g.id = r.game_id
            WHERE r.response = 'yes'
              AND g.status IN ('announced', 'registration_full')
@@ -544,7 +581,7 @@ export function listInviteMessages(
 }
 
 export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
-  migrateGameRsvpsTable(sql);
+  ensureRsvpRegistrationsTable(sql);
   const rows = [
     ...sql
       .exec(
@@ -554,10 +591,10 @@ export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
            p.telegram_id,
            p.avatar_file_id,
            COALESCE(p.created_at, r.created_at) as created_at
-         FROM game_rsvps r
+         FROM ${RSVP_TABLE} r
          LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
-         ORDER BY r.queue_order ASC, r.created_at ASC`,
+         ORDER BY r.created_at ASC, r.player_id ASC`,
         gameId,
       )
       .toArray(),
@@ -569,25 +606,23 @@ export function listRsvpYesWithQueue(
   sql: SqlStorage,
   gameId: number,
 ): Array<{ queue_order: number; name: string; player_id: number }> {
-  migrateGameRsvpsTable(sql);
+  ensureRsvpRegistrationsTable(sql);
   dedupeGameRsvps(sql, gameId);
-  renumberRsvpQueue(sql, gameId);
   const rows = [
     ...sql
       .exec(
         `SELECT
            COALESCE(p.name, 'Игрок #' || r.player_id) as name,
-           COALESCE(p.id, r.player_id) as player_id,
-           r.created_at,
-           r.player_id as r_player_id
-         FROM game_rsvps r
+           r.player_id as r_player_id,
+           r.created_at
+         FROM ${RSVP_TABLE} r
          LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
          ORDER BY r.created_at ASC, r.player_id ASC`,
         gameId,
       )
       .toArray(),
-  ] as Array<{ name: string; player_id: number; created_at: number; r_player_id: number }>;
+  ] as Array<{ name: string; created_at: number; r_player_id: number }>;
   return rows.map((r, i) => ({
     queue_order: i + 1,
     name: r.name,
@@ -607,30 +642,30 @@ export function getRsvpDebugInfo(
   yesCount: number;
   otherAnnouncedWithYes: Array<{ game_id: number; yes_count: number }>;
 } {
-  ensureGameRsvpsSchema(sql);
+  ensureRsvpRegistrationsTable(sql);
   const game = getGameById(sql, gameId);
   const master = firstRow<{ sql: string }>(
     sql,
-    "SELECT sql FROM sqlite_master WHERE type='table' AND name='game_rsvps'",
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='${RSVP_TABLE}'`,
   );
   const yesRows = [
     ...sql
       .exec(
-        `SELECT r.player_id, r.created_at, r.queue_order,
+        `SELECT r.player_id, r.created_at,
                 COALESCE(p.name, 'Игрок #' || r.player_id) as name
-         FROM game_rsvps r
+         FROM ${RSVP_TABLE} r
          LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
          ORDER BY r.created_at ASC, r.player_id ASC`,
         gameId,
       )
       .toArray(),
-  ] as Array<{ player_id: number; name: string; created_at: number; queue_order: number | null }>;
+  ] as Array<{ player_id: number; name: string; created_at: number }>;
   const otherAnnouncedWithYes = [
     ...sql
       .exec(
         `SELECT g.id as game_id, COUNT(*) as yes_count
-         FROM game_rsvps r
+         FROM ${RSVP_TABLE} r
          JOIN games g ON g.id = r.game_id
          WHERE r.response = 'yes'
            AND g.status IN ('announced', 'registration_full')
@@ -639,6 +674,7 @@ export function getRsvpDebugInfo(
       )
       .toArray(),
   ] as Array<{ game_id: number; yes_count: number }>;
+  const latestAnnounced = getLatestAnnouncedGameId(sql);
   return {
     game,
     pkColumns: gameRsvpsPkColumnNames(sql),
@@ -647,6 +683,7 @@ export function getRsvpDebugInfo(
     yesRows,
     yesCount: yesRows.length,
     otherAnnouncedWithYes,
+    latestAnnounced,
   };
 }
 

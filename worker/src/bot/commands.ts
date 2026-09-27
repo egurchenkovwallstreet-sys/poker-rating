@@ -432,6 +432,7 @@ export function createBot(env: Env): Bot {
         yesRows: Array<{ player_id: number; name: string; created_at: number; queue_order: number | null }>;
         otherAnnouncedWithYes: Array<{ game_id: number; yes_count: number }>;
         tableSql: string | null;
+        latestAnnounced: number | null;
       };
     }>(env, { action: 'getRsvpDebug', gameId: id });
     const d = res.debug;
@@ -455,8 +456,9 @@ export function createBot(env: Env): Bot {
     const ddl = d.tableSql ? d.tableSql.replace(/\s+/g, ' ').slice(0, 120) : '?';
     await ctx.reply(
       `🔍 RSVP debug #${id}\n` +
+        `актуальный анонс: ${d.latestAnnounced != null ? `#${d.latestAnnounced}` : 'нет'}\n` +
         `status: ${d.game.status}, max_players: ${d.game.max_players}\n` +
-        `PK: [${d.pkColumns.join(', ')}], bad UNIQUE(game_id): ${d.badGameIdUnique ? 'ДА' : 'нет'}\n` +
+        `таблица: game_rsvp_registrations\n` +
         `yes на этой игре: ${d.yesCount}\n` +
         `yes на других анонсах: ${others}\n\n` +
         `Очередь:\n${queue}\n\n` +
