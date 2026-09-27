@@ -155,6 +155,7 @@ export function createBot(env: Env): Bot {
   });
 
   bot.hears(STATS_BUTTON_TEXT, async (ctx) => {
+    try {
     const player = await getMyPlayer(env, ctx.from!.id);
     if (!player) {
       await ctx.reply('Сначала зарегистрируйтесь — кнопка «Регистрация» внизу.');
@@ -182,6 +183,10 @@ export function createBot(env: Env): Bot {
     await ctx.reply(`${dbLine}👇 Откройте Mini App:`, {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
     });
+    } catch (e) {
+      console.error('stats button:', e);
+      await ctx.reply('❌ Не удалось загрузить статистику. Админ: /refreshstats');
+    }
   });
 
   bot.hears(ADMIN_BUTTON_TEXT, async (ctx) => {
@@ -319,23 +324,29 @@ export function createBot(env: Env): Bot {
 
   bot.command('refreshstats', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
-    const res = await callDo<{
-      ok: boolean;
-      summary: {
-        finishedGames: number;
-        finishedGamesInStats: number;
-        playersInRating: number;
-        lastGamePlayers: number;
-      };
-    }>(env, { action: 'repairAndRefreshStats' });
-    const s = res.summary;
-    await ctx.reply(
-      `✅ Статистика пересчитана.\n\n` +
-        `Игр: ${s.finishedGames}, в окне 2 года: ${s.finishedGamesInStats}\n` +
-        `Игроков в рейтинге: ${s.playersInRating}\n` +
-        `Последняя игра: ${s.lastGamePlayers} чел.\n\n` +
-        `Mini App покажет ту же таблицу у всех участников.`,
-    );
+    try {
+      await ctx.reply('⏳ Пересчитываю статистику…');
+      const res = await callDo<{
+        ok: boolean;
+        summary: {
+          finishedGames: number;
+          finishedGamesInStats: number;
+          playersInRating: number;
+          lastGamePlayers: number;
+        };
+      }>(env, { action: 'repairAndRefreshStats' });
+      const s = res.summary;
+      await ctx.reply(
+        `✅ Статистика пересчитана.\n\n` +
+          `Игр: ${s.finishedGames}, в окне 2 года: ${s.finishedGamesInStats}\n` +
+          `Игроков в рейтинге: ${s.playersInRating}\n` +
+          `Последняя игра: ${s.lastGamePlayers} чел.\n\n` +
+          `Mini App покажет ту же таблицу у всех участников.`,
+      );
+    } catch (e) {
+      console.error('refreshstats:', e);
+      await ctx.reply(`❌ Ошибка пересчёта: ${e instanceof Error ? e.message : e}`);
+    }
   });
 
   bot.command('statsdebug', async (ctx) => {

@@ -122,14 +122,61 @@ export function repairFinishedGameDates(sql: SqlStorage): void {
 
 function migrateGamesTable(sql: SqlStorage): void {
   try {
-    const cols = [...sql.exec('PRAGMA table_info(games)').toArray()] as Array<{ name: string }>;
-    const names = cols.map((c) => c.name);
+    let cols = [...sql.exec('PRAGMA table_info(games)').toArray()] as Array<{ name: string }>;
+    let names = cols.map((c) => c.name);
     if (!names.includes('ticket_price')) {
       sql.exec('ALTER TABLE games ADD COLUMN ticket_price INTEGER NOT NULL DEFAULT 0');
     }
     if (!names.includes('max_players')) {
       sql.exec('ALTER TABLE games ADD COLUMN max_players INTEGER NOT NULL DEFAULT 0');
     }
+
+    const master = firstRow<{ sql: string }>(
+      sql,
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='games'",
+    );
+    if (master?.sql && !master.sql.includes("'announced'")) {
+      cols = [...sql.exec('PRAGMA table_info(games)').toArray()] as Array<{ name: string }>;
+      names = cols.map((c) => c.name);
+      const hasDemo = names.includes('is_demo');
+      sql.exec('PRAGMA foreign_keys = OFF');
+      sql.exec(`
+        CREATE TABLE games_migrated (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          created_by INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          ticket_price INTEGER NOT NULL DEFAULT 0,
+          max_players INTEGER NOT NULL DEFAULT 0,
+          is_demo INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      if (hasDemo) {
+        sql.exec(`
+          INSERT INTO games_migrated (id, date, status, created_by, created_at, ticket_price, max_players, is_demo)
+          SELECT id, date, status, created_by, created_at,
+            COALESCE(ticket_price, 0), COALESCE(max_players, 0), COALESCE(is_demo, 0)
+          FROM games
+        `);
+      } else {
+        sql.exec(`
+          INSERT INTO games_migrated (id, date, status, created_by, created_at, ticket_price, max_players, is_demo)
+          SELECT id, date, status, created_by, created_at,
+            COALESCE(ticket_price, 0), COALESCE(max_players, 0),
+            CASE WHEN status = 'finished' THEN 1 ELSE 0 END
+          FROM games
+        `);
+      }
+      sql.exec('DROP TABLE games');
+      sql.exec('ALTER TABLE games_migrated RENAME TO games');
+      sql.exec('CREATE INDEX IF NOT EXISTS idx_games_status ON games(status)');
+      sql.exec('CREATE INDEX IF NOT EXISTS idx_games_date ON games(date)');
+      sql.exec('PRAGMA foreign_keys = ON');
+    }
+
+    cols = [...sql.exec('PRAGMA table_info(games)').toArray()] as Array<{ name: string }>;
+    names = cols.map((c) => c.name);
     if (!names.includes('is_demo')) {
       sql.exec('ALTER TABLE games ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0');
       sql.exec("UPDATE games SET is_demo = 1 WHERE status = 'finished'");
@@ -142,35 +189,6 @@ function migrateGamesTable(sql: SqlStorage): void {
       if (finCount > 0 && demoCount === 0) {
         sql.exec("UPDATE games SET is_demo = 1 WHERE status = 'finished'");
       }
-    }
-    const master = firstRow<{ sql: string }>(
-      sql,
-      "SELECT sql FROM sqlite_master WHERE type='table' AND name='games'",
-    );
-    if (master?.sql && !master.sql.includes("'announced'")) {
-      sql.exec('PRAGMA foreign_keys = OFF');
-      sql.exec(`
-        CREATE TABLE games_migrated (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          date INTEGER NOT NULL,
-          status TEXT NOT NULL,
-          created_by INTEGER NOT NULL,
-          created_at INTEGER NOT NULL,
-          ticket_price INTEGER NOT NULL DEFAULT 0,
-          max_players INTEGER NOT NULL DEFAULT 0
-        )
-      `);
-      sql.exec(`
-        INSERT INTO games_migrated (id, date, status, created_by, created_at, ticket_price, max_players)
-        SELECT id, date, status, created_by, created_at,
-          COALESCE(ticket_price, 0), COALESCE(max_players, 0)
-        FROM games
-      `);
-      sql.exec('DROP TABLE games');
-      sql.exec('ALTER TABLE games_migrated RENAME TO games');
-      sql.exec('CREATE INDEX IF NOT EXISTS idx_games_status ON games(status)');
-      sql.exec('CREATE INDEX IF NOT EXISTS idx_games_date ON games(date)');
-      sql.exec('PRAGMA foreign_keys = ON');
     }
   } catch (e) {
     console.error('migrate games:', e);
@@ -349,7 +367,6 @@ export function finishGame(sql: SqlStorage, gameId: number): { ok: true } | { ok
   }
 
   sql.exec('UPDATE games SET status = ?, date = ? WHERE id = ?', 'finished', Date.now(), gameId);
-  refreshStatsSnapshot(sql);
   return { ok: true };
 }
 
@@ -556,7 +573,7 @@ export function buildPublicStatsSnapshot(sql: SqlStorage): PublicStatsSnapshot {
   const bundle = getStatsBundle(sql, monthKey);
   const months = listStatsMonthsWithGames(sql);
   const monthStats: Record<string, MonthStatRow[]> = {};
-  for (const m of months) {
+  for (const m of months.slice(0, 36)) {
     monthStats[m] = getMonthStats(sql, m);
   }
   const profiles: Record<string, PlayerProfile> = {};

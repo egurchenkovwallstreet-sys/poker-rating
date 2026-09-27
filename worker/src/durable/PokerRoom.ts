@@ -81,6 +81,13 @@ export class PokerRoom implements DurableObject {
           return json({ ok: true, total: db.getGameProfitSum(this.sql, body.gameId) });
         case 'finishGame': {
           const result = db.finishGame(this.sql, body.gameId);
+          if (result.ok) {
+            try {
+              db.refreshStatsSnapshot(this.sql);
+            } catch (e) {
+              console.error('refreshStatsSnapshot after finishGame:', e);
+            }
+          }
           return json(result, result.ok ? 200 : 400);
         }
         case 'deleteGame': {
