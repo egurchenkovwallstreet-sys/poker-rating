@@ -451,15 +451,27 @@ export async function listAnnouncedForStart(ctx: Context, env: Env): Promise<voi
 }
 
 export async function startGameAction(ctx: Context, env: Env, gameId: number): Promise<void> {
-  const result = await callDo<{ ok: boolean; error?: string; roster?: Player[] }>(env, {
-    action: 'startAnnouncedGame',
-    gameId,
-  });
+  let result: {
+    ok: boolean;
+    error?: string;
+    roster?: Player[];
+    players?: Player[];
+    yesCount?: number;
+  };
+  try {
+    result = await callDo(env, {
+      action: 'startAnnouncedGame',
+      gameId,
+    });
+  } catch (e) {
+    await ctx.reply(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    return;
+  }
   if (!result.ok) {
     await ctx.reply(`❌ ${result.error ?? 'Не удалось стартовать игру'}`);
     return;
   }
-  let roster = Array.isArray(result.roster) ? result.roster : [];
+  let roster = result.players ?? result.roster ?? [];
   if (roster.length === 0) {
     const again = await callDo<{ ok: boolean; players: Player[] }>(env, {
       action: 'listRsvpYesPlayers',
@@ -468,8 +480,13 @@ export async function startGameAction(ctx: Context, env: Env, gameId: number): P
     roster = again.players ?? [];
   }
   if (roster.length === 0) {
+    const sum = await callDo<{ ok: boolean; yesCount: number }>(env, {
+      action: 'getRsvpSummary',
+      gameId,
+    });
     await ctx.reply(
-      `❌ Игра #${gameId}: в ответе сервера пустой состав, хотя старт прошёл. Проверьте RSVP и сделайте новый анонс.`,
+      `❌ Игра #${gameId}: состав пустой (RSVP yes в базе: ${sum.yesCount ?? 0}).\n` +
+        `Старт отменён. /rsvpdebug ${gameId}`,
     );
     return;
   }

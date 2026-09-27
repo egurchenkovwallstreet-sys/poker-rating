@@ -519,7 +519,7 @@ export function setGameRsvp(
 export function startAnnouncedGame(
   sql: SqlStorage,
   gameId: number,
-): { ok: true; roster: Player[] } | { ok: false; error: string } {
+): { ok: true; roster: Player[]; yesCount: number } | { ok: false; error: string } {
   ensureRsvpRegistrationsTable(sql);
   const game = getGameById(sql, gameId);
   if (!game) return { ok: false, error: 'Игра не найдена' };
@@ -529,11 +529,11 @@ export function startAnnouncedGame(
   renumberRsvpQueue(sql, gameId);
   repairGameMaxPlayersIfZero(sql, gameId);
   const gameFresh = getGameById(sql, gameId)!;
-  const allYes = listRsvpYesPlayers(sql, gameId);
-  const cap = effectiveMaxPlayers(gameFresh, allYes.length);
+  const yesOnly = countRsvpYes(sql, gameId);
+  const allYes = listRsvpYesPlayersRobust(sql, gameId);
+  const cap = effectiveMaxPlayers(gameFresh, Math.max(allYes.length, yesOnly));
   const roster = allYes.slice(0, cap);
   if (roster.length === 0) {
-    const yesOnly = countRsvpYes(sql, gameId);
     const otherGames = [
       ...sql
         .exec(
@@ -562,8 +562,9 @@ export function startAnnouncedGame(
           : `На игру #${gameId} никто не нажал «Участвую».${hint}`,
     };
   }
+  ensureGameResultsRowsForRoster(sql, gameId, roster);
   sql.exec("UPDATE games SET status = 'open' WHERE id = ?", gameId);
-  return { ok: true, roster };
+  return { ok: true, roster, yesCount: roster.length };
 }
 
 export function saveInviteMessage(
@@ -593,6 +594,11 @@ export function listInviteMessages(
 }
 
 export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
+  return listRsvpYesPlayersRobust(sql, gameId);
+}
+
+/** Состав для старта: JOIN + запасной путь только по player_id из RSVP. */
+export function listRsvpYesPlayersRobust(sql: SqlStorage, gameId: number): Player[] {
   ensureRsvpRegistrationsTable(sql);
   const rows = [
     ...sql
@@ -611,7 +617,54 @@ export function listRsvpYesPlayers(sql: SqlStorage, gameId: number): Player[] {
       )
       .toArray(),
   ] as unknown as Player[];
-  return rows;
+  if (rows.length > 0) return rows;
+
+  const yesCount = countRsvpYes(sql, gameId);
+  if (yesCount === 0) return [];
+
+  const idRows = [
+    ...sql
+      .exec(
+        `SELECT player_id, created_at FROM ${RSVP_TABLE}
+         WHERE game_id = ? AND response = 'yes'
+         ORDER BY created_at ASC, player_id ASC`,
+        gameId,
+      )
+      .toArray(),
+  ] as Array<{ player_id: number; created_at: number }>;
+
+  const out: Player[] = [];
+  for (const row of idRows) {
+    const p = firstRow<Player>(sql, 'SELECT * FROM players WHERE id = ?', row.player_id);
+    out.push(
+      p ?? {
+        id: row.player_id,
+        name: `Игрок #${row.player_id}`,
+        telegram_id: null,
+        avatar_file_id: null,
+        created_at: row.created_at,
+      },
+    );
+  }
+  return out;
+}
+
+function ensureGameResultsRowsForRoster(sql: SqlStorage, gameId: number, roster: Player[]): void {
+  for (const p of roster) {
+    const existing = firstRow<{ id: number }>(
+      sql,
+      'SELECT id FROM game_results WHERE game_id = ? AND player_id = ?',
+      gameId,
+      p.id,
+    );
+    if (!existing) {
+      sql.exec(
+        'INSERT INTO game_results (game_id, player_id, buyin, payout, profit, place) VALUES (?, ?, 0, 0, 0, NULL)',
+        gameId,
+        p.id,
+      );
+    }
+  }
 }
 
 export function listRsvpYesWithQueue(
