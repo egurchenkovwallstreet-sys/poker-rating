@@ -552,6 +552,7 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
   games: number;
   playerNames: string[];
   linkedAdmin: boolean;
+  errors: string[];
 } {
   const names = ['Демо Иван', 'Демо Мария', 'Демо Олег', 'Демо Петр', 'Демо Саша', 'Демо Катя'];
   const playerIds: number[] = [];
@@ -602,16 +603,23 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
 
   const registered = getPlayerByTelegramId(sql, createdBy);
   const rosterIds = (): number[] => {
-    const ids = playerIds.slice(0, 6);
-    if (registered) ids[0] = registered.id;
-    return ids;
+    const base = playerIds.slice(0, 6);
+    if (!registered) return base;
+    const withoutSelf = base.filter((id) => id !== registered!.id);
+    return [registered.id, ...withoutSelf].slice(0, 6);
   };
 
   const gameDates = demoGameTimestamps(gameSets.length);
   let gamesCreated = 0;
+  const errors: string[] = [];
   for (let g = 0; g < gameSets.length; g++) {
     const set = gameSets[g];
     const subsetIds = rosterIds();
+    const unique = new Set(subsetIds);
+    if (unique.size !== subsetIds.length) {
+      errors.push(`Игра ${g + 1}: дубликаты игроков в составе`);
+      continue;
+    }
     const gameId = createGame(sql, subsetIds, createdBy);
     for (const [idx, buyin, payout] of set) {
       if (idx >= subsetIds.length) continue;
@@ -621,6 +629,9 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
     if (fin.ok) {
       gamesCreated++;
       sql.exec('UPDATE games SET date = ? WHERE id = ?', gameDates[g], gameId);
+    } else {
+      errors.push(`Игра ${g + 1}: ${fin.error}`);
+      deleteGame(sql, gameId);
     }
   }
 
@@ -629,5 +640,6 @@ export function seedDemo(sql: SqlStorage, createdBy: number): {
     games: gamesCreated,
     playerNames: names,
     linkedAdmin: !!registered,
+    errors,
   };
 }

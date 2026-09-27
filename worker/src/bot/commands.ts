@@ -255,16 +255,25 @@ export function createBot(env: Env): Bot {
         games: number;
         playerNames: string[];
         linkedAdmin: boolean;
+        errors: string[];
       }>(env, {
         action: 'seedDemo',
         createdBy: ctx.from!.id,
       });
       const list = res.playerNames.map((n) => `• ${n}`).join('\n');
       const adminLine = res.linkedAdmin
-        ? '\n\nВы зарегистрированы — ваш профиль в demo-играх (вместо «Демо Иван»).'
-        : '\n\nПодсказка: /register — тогда следующий seed добавит вас в demo-игры для вкладки «Профиль».';
+        ? '\n\nВы зарегистрированы — ваш профиль в demo-играх.'
+        : '\n\nПодсказка: /register — тогда seed добавит вас в demo-игры для вкладки «Профиль».';
+      const errLine =
+        res.errors?.length > 0
+          ? `\n\n⚠️ Не все игры сохранились:\n${res.errors.slice(0, 3).join('\n')}`
+          : '';
+      const head =
+        res.games > 0
+          ? '✅ Тестовые данные добавлены'
+          : '❌ Игры не созданы — см. ошибки ниже';
       await ctx.reply(
-        `✅ Тестовые данные добавлены\n\nDemo-игроки (рейтинг в таблицах):\n${list}\n\nЗавершённых игр: ${res.games}${adminLine}\n\n📊 Статистика → «Открыть статистику».`,
+        `${head}\n\nDemo-игроки (рейтинг в таблицах):\n${list}\n\nЗавершённых игр: ${res.games}${errLine}${adminLine}\n\n📊 Статистика → «Открыть статистику».`,
       );
     } catch (e) {
       await ctx.reply(`❌ ${e}`);
