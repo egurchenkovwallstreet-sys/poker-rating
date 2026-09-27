@@ -171,7 +171,7 @@ export function createBot(env: Env): Bot {
     const s = summary.summary;
     const dbLine =
       s.finishedGames > 0
-        ? `В базе: ${s.finishedGames} завершённых игр, ${s.playersInRating} игроков в рейтинге.\nПоследняя игра: ${s.lastGamePlayers} участников.\n\n`
+        ? `В базе: ${s.finishedGames} завершённых игр (в рейтинге за 2 года: ${s.playersInRating} игроков).\nПоследняя игра: ${s.lastGamePlayers} участников.\n\n`
         : '⚠️ В базе пока нет завершённых игр. Админ: /seeddemo или введите результаты игры.\n\n';
     await ctx.reply(`${dbLine}👇 Откройте Mini App:`, {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),

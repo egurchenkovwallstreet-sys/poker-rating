@@ -7,6 +7,15 @@ const STATS_RETENTION_MS = Math.round(2 * 365.25 * 24 * 60 * 60 * 1000);
 function statsSinceTimestamp(): number {
   return Date.now() - STATS_RETENTION_MS;
 }
+
+/** Границы календарного месяца в UTC (совпадает с датами игр в seed). */
+function monthRangeUtc(month: string): { start: number; end: number } {
+  const [year, mon] = month.split('-').map(Number);
+  return {
+    start: Date.UTC(year, mon - 1, 1),
+    end: Date.UTC(year, mon, 1),
+  };
+}
 import type {
   Game,
   GameResult,
@@ -327,27 +336,29 @@ export function getLastGame(sql: SqlStorage): GameWithResults | null {
 
 export function getClubStatsSummary(sql: SqlStorage): {
   finishedGames: number;
+  finishedGamesInStats: number;
   playersInRating: number;
   lastGameId: number | null;
   lastGamePlayers: number;
 } {
+  const since = statsSinceTimestamp();
   const finishedGames =
     firstRow<{ c: number }>(
       sql,
       "SELECT COUNT(*) as c FROM games WHERE status = 'finished'",
     )?.c ?? 0;
-  const playersInRating =
+  const finishedGamesInStats =
     firstRow<{ c: number }>(
       sql,
-      `SELECT COUNT(DISTINCT gr.player_id) as c
-       FROM game_results gr
-       JOIN games g ON g.id = gr.game_id
-       WHERE g.status = 'finished'`,
+      "SELECT COUNT(*) as c FROM games WHERE status = 'finished' AND date >= ?",
+      since,
     )?.c ?? 0;
+  const overall = getOverall(sql);
   const last = getLastGame(sql);
   return {
     finishedGames,
-    playersInRating,
+    finishedGamesInStats,
+    playersInRating: overall.length,
     lastGameId: last?.game.id ?? null,
     lastGamePlayers: last?.results.length ?? 0,
   };
@@ -368,9 +379,9 @@ export function listFinishedGames(sql: SqlStorage, limit = 20): Game[] {
 }
 
 export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
-  const [year, mon] = month.split('-').map(Number);
-  const start = new Date(year, mon - 1, 1).getTime();
-  const end = new Date(year, mon, 1).getTime();
+  const { start, end } = monthRangeUtc(month);
+  const since = statsSinceTimestamp();
+  const from = Math.max(start, since);
 
   const rows = [
     ...sql
@@ -386,12 +397,11 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
          FROM players p
          JOIN game_results gr ON gr.player_id = p.id
          JOIN games g ON g.id = gr.game_id
-         WHERE g.status = 'finished' AND g.date >= ? AND g.date < ? AND g.date >= ?
+         WHERE g.status = 'finished' AND g.date >= ? AND g.date < ?
          GROUP BY p.id, p.name
          ORDER BY total_profit DESC`,
-        start,
+        from,
         end,
-        statsSinceTimestamp(),
       )
       .toArray(),
   ] as Array<{
@@ -587,7 +597,9 @@ function demoGameTimestamps(count: number): number[] {
   const timestamps: number[] = [];
   for (let i = 0; i < count; i++) {
     const monthsAgo = count - 1 - i;
-    const d = new Date(now.getFullYear(), now.getMonth() - monthsAgo, 15, 20, 0, 0);
+    const d = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsAgo, 15, 20, 0, 0),
+    );
     timestamps.push(d.getTime());
   }
   return timestamps;
