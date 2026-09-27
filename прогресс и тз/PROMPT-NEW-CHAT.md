@@ -33,7 +33,8 @@
 
 - Проверь, что после `/seeddemo` (или доработанного seed) на вкладках **Last game / Month / Overall / Profile** есть понятные данные, без пустых экранов и ошибок auth.
 - При необходимости: улучши `seedDemo` в `worker/src/db/queries.ts`, API `worker/src/api/stats.ts`, страницы в `miniapp/src/pages/*`.
-- Объясняй, что ты делаешь и как мне проверить в Telegram (коротко).
+- Учти: demo без `telegram_id` — для Overall/Month/Last; Profile — для зарегистрированного игрока (см. `PROGRESS.md` → «Тестовая статистика»).
+- Объясняй, что ты делаешь и как мне проверить в Telegram (коротко): `/seeddemo` → «Статистика» → «Открыть статистику».
 
 ## Как работать
 
