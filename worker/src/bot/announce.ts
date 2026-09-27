@@ -274,11 +274,27 @@ export async function handleGameRsvp(
   const game = gameRes.game;
 
   if (response === 'yes') {
-    const spot = result.queueOrder ?? result.yesCount ?? 0;
+    let spot = typeof result.queueOrder === 'number' ? result.queueOrder : 0;
+    if (spot <= 0) {
+      const slotRes = await callDo<{ ok: boolean; queueOrder: number | null; yesCount: number }>(env, {
+        action: 'getRsvpQueueOrder',
+        gameId,
+        playerId: playerRes.player.id,
+      });
+      spot = slotRes.queueOrder ?? slotRes.yesCount ?? 0;
+    }
+    const cap = game.max_players > 0 ? game.max_players : result.yesCount ?? spot;
     await ctx.answerCallbackQuery({
-      text: spot > 0 ? `Вы в очереди: место ${spot} из ${game.max_players}` : 'Записано',
+      text: spot > 0 ? `Записано: место ${spot} из ${cap}` : 'Не удалось определить место — см. чат',
+      show_alert: spot <= 0,
     });
-    const short = `✅ ${playerRes.player.name} — место ${spot} в очереди на игру #${gameId} (всего мест ${game.max_players}).`;
+    if (spot <= 0) {
+      await ctx.reply(
+        `⚠️ Не удалось зафиксировать место в очереди на игру #${gameId}. Нажмите «Участвую» ещё раз или напишите админу.`,
+      );
+      return;
+    }
+    const short = `✅ ${playerRes.player.name} — место ${spot} в очереди на игру #${gameId} (всего мест ${cap}).`;
     await notifyAllRegistered(ctx.api, env, short);
   } else {
     await ctx.answerCallbackQuery({ text: 'Понятно, без вас' });

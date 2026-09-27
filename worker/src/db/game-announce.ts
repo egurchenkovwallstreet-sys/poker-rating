@@ -131,13 +131,18 @@ export function listAnnouncedGames(sql: SqlStorage): Game[] {
   ] as unknown as Game[];
 }
 
-/** Один игрок — одна строка RSVP (без PK раньше плодились дубли). */
+/** Удалить только лишние дубликаты (game_id + player_id), не трогая единственную строку. */
 function dedupeGameRsvps(sql: SqlStorage, gameId: number): void {
   try {
     sql.exec(
       `DELETE FROM game_rsvps
-       WHERE game_id = ? AND rowid NOT IN (
-         SELECT MIN(rowid) FROM game_rsvps WHERE game_id = ? GROUP BY player_id
+       WHERE game_id = ? AND rowid IN (
+         SELECT r.rowid FROM game_rsvps r
+         WHERE r.game_id = ?
+           AND r.rowid > (
+             SELECT MIN(r2.rowid) FROM game_rsvps r2
+             WHERE r2.game_id = r.game_id AND r2.player_id = r.player_id
+           )
        )`,
       gameId,
       gameId,
@@ -145,6 +150,36 @@ function dedupeGameRsvps(sql: SqlStorage, gameId: number): void {
   } catch (e) {
     console.error('dedupeGameRsvps:', e);
   }
+}
+
+/** Место в очереди: кто раньше нажал «Участvую» (created_at), при равенстве — player_id. */
+export function getRsvpQueueOrder(
+  sql: SqlStorage,
+  gameId: number,
+  playerId: number,
+): number | null {
+  dedupeGameRsvps(sql, gameId);
+  const me = firstRow<{ created_at: number; response: string }>(
+    sql,
+    `SELECT created_at, response FROM game_rsvps
+     WHERE game_id = ? AND player_id = ?
+     ORDER BY rowid ASC LIMIT 1`,
+    gameId,
+    playerId,
+  );
+  if (!me || me.response !== 'yes') return null;
+  const row = firstRow<{ ord: number }>(
+    sql,
+    `SELECT 1 + COUNT(*) as ord
+     FROM game_rsvps r
+     WHERE r.game_id = ? AND r.response = 'yes'
+       AND (r.created_at < ? OR (r.created_at = ? AND r.player_id < ?))`,
+    gameId,
+    me.created_at,
+    me.created_at,
+    playerId,
+  );
+  return row?.ord ?? 1;
 }
 
 /** Место в очереди = порядок первого «Участvую» (created_at), не MAX(queue_order). */
@@ -226,19 +261,15 @@ export function setGameRsvp(
   const yesCount = countRsvpYes(sql, gameId);
   if (existing?.response === 'yes') {
     renumberRsvpQueue(sql, gameId);
-    const slot =
-      firstRow<{ queue_order: number | null }>(
-        sql,
-        'SELECT queue_order FROM game_rsvps WHERE game_id = ? AND player_id = ?',
-        gameId,
-        playerId,
-      )?.queue_order ?? null;
+    const slot = getRsvpQueueOrder(sql, gameId, playerId);
     return { ok: true, yesCount: countRsvpYes(sql, gameId), queueOrder: slot };
   }
 
   if (yesCount >= registrationCap(game)) {
     return { ok: false, error: 'Все места заняты' };
   }
+
+  const yesBefore = countRsvpYes(sql, gameId);
 
   if (existing?.response === 'no') {
     sql.exec(
@@ -247,6 +278,14 @@ export function setGameRsvp(
       now,
       gameId,
       playerId,
+    );
+  } else if (!existing) {
+    sql.exec(
+      `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
+       VALUES (?, ?, 'yes', NULL, ?)`,
+      gameId,
+      playerId,
+      now,
     );
   } else {
     sql.exec(
@@ -261,17 +300,20 @@ export function setGameRsvp(
       now,
     );
   }
+
+  dedupeGameRsvps(sql, gameId);
   renumberRsvpQueue(sql, gameId);
 
-  const slot =
-    firstRow<{ queue_order: number | null }>(
-      sql,
-      'SELECT queue_order FROM game_rsvps WHERE game_id = ? AND player_id = ?',
-      gameId,
-      playerId,
-    )?.queue_order ?? null;
-
   const finalYesCount = countRsvpYes(sql, gameId);
+  const slot = getRsvpQueueOrder(sql, gameId, playerId);
+
+  if (finalYesCount <= yesBefore || slot == null) {
+    return {
+      ok: false,
+      error:
+        'Запись не сохранилась. Убедитесь, что вы /register, и нажмите «Участвую» ещё раз.',
+    };
+  }
 
   let registrationClosed = false;
   if (finalYesCount >= registrationCap(game)) {
@@ -389,21 +431,24 @@ export function listRsvpYesWithQueue(
   gameId: number,
 ): Array<{ queue_order: number; name: string; player_id: number }> {
   migrateGameRsvpsTable(sql);
+  dedupeGameRsvps(sql, gameId);
   renumberRsvpQueue(sql, gameId);
   const rows = [
     ...sql
       .exec(
-        `SELECT r.queue_order,
-                COALESCE(p.name, 'Игрок #' || r.player_id) as name,
-                COALESCE(p.id, r.player_id) as player_id
+        `SELECT
+           COALESCE(p.name, 'Игрок #' || r.player_id) as name,
+           COALESCE(p.id, r.player_id) as player_id,
+           r.created_at,
+           r.player_id as r_player_id
          FROM game_rsvps r
          LEFT JOIN players p ON p.id = r.player_id
          WHERE r.game_id = ? AND r.response = 'yes'
-         ORDER BY r.queue_order ASC, r.created_at ASC`,
+         ORDER BY r.created_at ASC, r.player_id ASC`,
         gameId,
       )
       .toArray(),
-  ] as Array<{ queue_order: number | null; name: string; player_id: number }>;
+  ] as Array<{ name: string; player_id: number; created_at: number; r_player_id: number }>;
   return rows.map((r, i) => ({
     queue_order: i + 1,
     name: r.name,

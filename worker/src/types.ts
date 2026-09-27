@@ -134,6 +134,7 @@ export type DoAction =
   | { action: 'getGameById'; gameId: number }
   | { action: 'listRsvpYesPlayers'; gameId: number }
   | { action: 'listRsvpYesWithQueue'; gameId: number }
+  | { action: 'getRsvpQueueOrder'; gameId: number; playerId: number }
   | { action: 'saveInviteMessage'; gameId: number; telegramId: number; messageId: number }
   | { action: 'listInviteMessages'; gameId: number }
   | { action: 'listOpenGames' }
