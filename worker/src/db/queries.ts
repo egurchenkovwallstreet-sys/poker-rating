@@ -1,5 +1,4 @@
 import type { SqlStorage } from '@cloudflare/workers-types';
-import { ensureGameRsvpsSchema, ensureRsvpRegistrationsTable } from './game-announce';
 import { firstRow } from './query-helpers';
 import {
   demoGameTimestamps,
@@ -58,12 +57,6 @@ function migrateSchema(sql: SqlStorage): void {
     sql.exec('CREATE INDEX IF NOT EXISTS idx_game_rsvps_game ON game_rsvps(game_id)');
   } catch (e) {
     console.error('migrate game_rsvps:', e);
-  }
-  try {
-    ensureGameRsvpsSchema(sql);
-    ensureRsvpRegistrationsTable(sql);
-  } catch (e) {
-    console.error('migrateGameRsvpsTable on init:', e);
   }
   try {
     sql.exec(`

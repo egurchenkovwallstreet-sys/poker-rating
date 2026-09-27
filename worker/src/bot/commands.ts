@@ -7,6 +7,7 @@ import {
   REGISTER_BUTTON_TEXT,
   STATS_BUTTON_TEXT,
   statsInlineKeyboard,
+  buildBottomKeyboard,
   resetSideMenuButtonToDefault,
   syncUserBottomMenu,
 } from './bottom-menu';
@@ -64,7 +65,12 @@ export function createBot(env: Env): Bot {
 
   async function sendWelcome(ctx: Context): Promise<void> {
     const userId = ctx.from!.id;
-    const player = await getMyPlayer(env, userId);
+    let player: { id: number; name: string } | null = null;
+    try {
+      player = await getMyPlayer(env, userId);
+    } catch (e) {
+      console.error('sendWelcome getMyPlayer:', e);
+    }
     const userIsAdmin = checkAdmin(userId);
     let intro: string;
     if (player) {
@@ -76,7 +82,13 @@ export function createBot(env: Env): Bot {
       intro =
         '👋 Добро пожаловать в Покерный рейтинг!\n\nНажмите «Регистрация» внизу и введите имя для рейтинга.';
     }
-    const keyboard = await syncUserBottomMenu(ctx, env, userId);
+    let keyboard;
+    try {
+      keyboard = await syncUserBottomMenu(ctx, env, userId);
+    } catch (e) {
+      console.error('sendWelcome menu sync:', e);
+      keyboard = buildBottomKeyboard(Boolean(player), userIsAdmin);
+    }
     const menu = { reply_markup: keyboard };
     try {
       await ctx.replyWithPhoto(welcomePhotoUrl(env.WEBAPP_URL), { caption: intro, ...menu });
@@ -122,9 +134,16 @@ export function createBot(env: Env): Bot {
   }
 
   bot.command('start', async (ctx) => {
-    const payload = ctx.match?.trim();
-    if (payload && (await handleAdminDeepLink(ctx, payload))) return;
-    await sendWelcome(ctx);
+    try {
+      const payload = ctx.match?.trim();
+      if (payload && (await handleAdminDeepLink(ctx, payload))) return;
+      await sendWelcome(ctx);
+    } catch (e) {
+      console.error('/start failed:', e);
+      await ctx.reply(
+        '👋 Бот на связи, но база клуба временно недоступна.\nПовторите /start через минуту.\n\nЕсли не помогает — админ: /rsvpdebug или напишите разработчику.',
+      );
+    }
   });
 
   bot.command('help', async (ctx) => {
@@ -585,6 +604,14 @@ export function createBot(env: Env): Bot {
     const data = ctx.callbackQuery.data;
     const userId = ctx.from!.id;
 
+    const safeAnswer = async (opts?: { text?: string; show_alert?: boolean }) => {
+      try {
+        await ctx.answerCallbackQuery(opts);
+      } catch (e) {
+        console.error('answerCallbackQuery', data, e);
+      }
+    };
+
     if (data === 'admin:back') {
       if (!checkAdmin(userId)) {
         await ctx.answerCallbackQuery({ text: '⛔ Доступ запрещён', show_alert: true });
@@ -741,6 +768,8 @@ export function createBot(env: Env): Bot {
       await ctx.answerCallbackQuery();
       return;
     }
+
+    await safeAnswer();
   });
 
   bot.catch((err) => {

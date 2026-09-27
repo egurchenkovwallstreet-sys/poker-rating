@@ -18,13 +18,23 @@ export class PokerRoom implements DurableObject {
 
   private async ensureInit(): Promise<void> {
     if (this.initialized) return;
-    db.initSchema(this.sql, SCHEMA_SQL);
+    try {
+      db.initSchema(this.sql, SCHEMA_SQL);
+    } catch (e) {
+      console.error('DO initSchema failed:', e);
+    }
     this.initialized = true;
   }
 
   async fetch(request: Request): Promise<Response> {
     await this.ensureInit();
-    const body = (await request.json()) as DoAction;
+    let body: DoAction;
+    try {
+      body = (await request.json()) as DoAction;
+    } catch (e) {
+      console.error('DO bad JSON body:', e);
+      return json({ ok: false, error: 'Invalid JSON body' }, 400);
+    }
 
     try {
       switch (body.action) {

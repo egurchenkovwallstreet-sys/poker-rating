@@ -53,4 +53,17 @@ app.post('/webhook', async (c) => {
 
 app.get('/health', (c) => c.json({ ok: true }));
 
+app.get('/health/do', async (c) => {
+  try {
+    const ping = await callDo<{ ok: boolean; session: unknown }>(c.env, {
+      action: 'getSession',
+      userId: 0,
+    });
+    return c.json({ ok: true, do: ping });
+  } catch (e) {
+    console.error('health/do:', e);
+    return c.json({ ok: false, error: String(e instanceof Error ? e.message : e) }, 503);
+  }
+});
+
 export default app;
