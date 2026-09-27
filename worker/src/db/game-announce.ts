@@ -43,6 +43,12 @@ export function getGameById(sql: SqlStorage, gameId: number): Game | null {
   return firstRow<Game>(sql, 'SELECT * FROM games WHERE id = ?', gameId);
 }
 
+function registrationCap(game: Game): number {
+  const raw = Number(game.max_players);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return 999;
+}
+
 /** max_players=0 в старых строках ломало slice(0,0) → пустой состав при старте. */
 export function effectiveMaxPlayers(game: Game, yesCount: number): number {
   const raw = Number(game.max_players);
@@ -111,21 +117,31 @@ export function listAnnouncedGames(sql: SqlStorage): Game[] {
   ] as unknown as Game[];
 }
 
-function nextRsvpQueueOrder(sql: SqlStorage, gameId: number): number {
-  const row = firstRow<{ m: number }>(
-    sql,
-    `SELECT COALESCE(MAX(queue_order), 0) as m FROM game_rsvps
-     WHERE game_id = ? AND response = 'yes'`,
-    gameId,
-  );
-  return (row?.m ?? 0) + 1;
+/** Один игрок — одна строка RSVP (без PK раньше плодились дубли). */
+function dedupeGameRsvps(sql: SqlStorage, gameId: number): void {
+  try {
+    sql.exec(
+      `DELETE FROM game_rsvps
+       WHERE game_id = ? AND rowid NOT IN (
+         SELECT MIN(rowid) FROM game_rsvps WHERE game_id = ? GROUP BY player_id
+       )`,
+      gameId,
+      gameId,
+    );
+  } catch (e) {
+    console.error('dedupeGameRsvps:', e);
+  }
 }
 
+/** Место в очереди = порядок первого «Участvую» (created_at), не MAX(queue_order). */
 export function renumberRsvpQueue(sql: SqlStorage, gameId: number): void {
+  dedupeGameRsvps(sql, gameId);
   const rows = [
     ...sql
       .exec(
-        "SELECT player_id FROM game_rsvps WHERE game_id = ? AND response = 'yes' ORDER BY queue_order ASC, created_at ASC",
+        `SELECT player_id FROM game_rsvps
+         WHERE game_id = ? AND response = 'yes'
+         ORDER BY created_at ASC, player_id ASC`,
         gameId,
       )
       .toArray(),
@@ -195,26 +211,42 @@ export function setGameRsvp(
 
   const yesCount = countRsvpYes(sql, gameId);
   if (existing?.response === 'yes') {
-    return { ok: true, yesCount, queueOrder: existing.queue_order };
+    renumberRsvpQueue(sql, gameId);
+    const slot =
+      firstRow<{ queue_order: number | null }>(
+        sql,
+        'SELECT queue_order FROM game_rsvps WHERE game_id = ? AND player_id = ?',
+        gameId,
+        playerId,
+      )?.queue_order ?? null;
+    return { ok: true, yesCount: countRsvpYes(sql, gameId), queueOrder: slot };
   }
 
-  if (yesCount >= game.max_players) {
+  if (yesCount >= registrationCap(game)) {
     return { ok: false, error: 'Все места заняты' };
   }
 
-  const queueOrder = nextRsvpQueueOrder(sql, gameId);
-  sql.exec(
-    `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
-     VALUES (?, ?, 'yes', ?, ?)
-     ON CONFLICT(game_id, player_id) DO UPDATE SET
-       response = 'yes',
-       queue_order = excluded.queue_order,
-       created_at = excluded.created_at`,
-    gameId,
-    playerId,
-    queueOrder,
-    now,
-  );
+  if (existing?.response === 'no') {
+    sql.exec(
+      `UPDATE game_rsvps SET response = 'yes', created_at = ?, queue_order = NULL
+       WHERE game_id = ? AND player_id = ?`,
+      now,
+      gameId,
+      playerId,
+    );
+  } else {
+    sql.exec(
+      `INSERT INTO game_rsvps (game_id, player_id, response, queue_order, created_at)
+       VALUES (?, ?, 'yes', NULL, ?)
+       ON CONFLICT(game_id, player_id) DO UPDATE SET
+         response = 'yes',
+         created_at = excluded.created_at,
+         queue_order = NULL`,
+      gameId,
+      playerId,
+      now,
+    );
+  }
   renumberRsvpQueue(sql, gameId);
 
   const slot =
@@ -223,12 +255,12 @@ export function setGameRsvp(
       'SELECT queue_order FROM game_rsvps WHERE game_id = ? AND player_id = ?',
       gameId,
       playerId,
-    )?.queue_order ?? queueOrder;
+    )?.queue_order ?? null;
 
   const finalYesCount = countRsvpYes(sql, gameId);
 
   let registrationClosed = false;
-  if (finalYesCount >= game.max_players) {
+  if (finalYesCount >= registrationCap(game)) {
     sql.exec("UPDATE games SET status = 'registration_full' WHERE id = ?", gameId);
     registrationClosed = true;
   }
@@ -339,7 +371,7 @@ export function listRsvpYesWithQueue(
       .toArray(),
   ] as Array<{ queue_order: number | null; name: string; player_id: number }>;
   return rows.map((r, i) => ({
-    queue_order: r.queue_order ?? i + 1,
+    queue_order: i + 1,
     name: r.name,
     player_id: r.player_id,
   }));
