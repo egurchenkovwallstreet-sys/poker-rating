@@ -15,13 +15,7 @@ function readInitDataFromUrl(): string {
 
 const INIT_DATA_STORAGE_KEY = 'poker_rating_tg_init_data';
 
-function readPersistedInitData(): string {
-  try {
-    return sessionStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim() || '';
-  } catch {
-    return '';
-  }
-}
+let cachedInitData = '';
 
 function writePersistedInitData(data: string): void {
   try {
@@ -41,9 +35,6 @@ function clearPersistedInitData(): void {
   }
 }
 
-/** После первого успешного чтения не теряем initData (вкладки, обновление страницы в Telegram). */
-let cachedInitData = '';
-
 function persistInitData(data: string): void {
   const trimmed = data.trim();
   if (!trimmed) return;
@@ -51,26 +42,8 @@ function persistInitData(data: string): void {
   writePersistedInitData(trimmed);
 }
 
-function readStoredInitData(): string {
-  if (cachedInitData) return cachedInitData;
-  const fromSession = readPersistedInitData();
-  if (fromSession) {
-    cachedInitData = fromSession;
-    return fromSession;
-  }
-  try {
-    const fromLocal = localStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
-    if (fromLocal) {
-      cachedInitData = fromLocal;
-      return fromLocal;
-    }
-  } catch {
-    /* ignore */
-  }
-  return '';
-}
-
-function readInitDataSync(): string {
+/** Свежий initData: сначала Telegram / URL, кэш — только запасной. */
+function readFreshInitDataSync(): string {
   const tg = (window as unknown as { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp;
   const direct = tg?.initData?.trim();
   if (direct) {
@@ -82,60 +55,96 @@ function readInitDataSync(): string {
     persistInitData(fromUrl);
     return fromUrl;
   }
-  return readStoredInitData();
+  return '';
 }
 
-/** Telegram иногда отдаёт initData с задержкой после открытия Web App с клавиатуры */
-export async function waitForInitData(timeoutMs = 10000): Promise<string> {
-  const stored = readStoredInitData();
-  if (stored) return stored;
+function readStoredInitDataFallback(): string {
+  if (cachedInitData) return cachedInitData;
+  try {
+    const fromSession = sessionStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
+    if (fromSession) {
+      cachedInitData = fromSession;
+      return fromSession;
+    }
+    const fromLocal = localStorage.getItem(INIT_DATA_STORAGE_KEY)?.trim();
+    if (fromLocal) {
+      cachedInitData = fromLocal;
+      return fromLocal;
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
 
+export function clearInitDataCache(): void {
+  cachedInitData = '';
+  clearPersistedInitData();
+}
+
+/**
+ * Ждём initData от Telegram при каждом открытии Web App.
+ * Ошибка прошлой версии: сразу отдавали localStorage и не читали новый initData.
+ */
+export async function waitForInitData(timeoutMs = 10000): Promise<string> {
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready?: () => void } } }).Telegram?.WebApp;
   tg?.ready?.();
 
+  const immediate = readFreshInitDataSync();
+  if (immediate) return immediate;
+
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const data = readInitDataSync();
-    if (data) {
-      persistInitData(data);
-      return data;
-    }
+    const data = readFreshInitDataSync();
+    if (data) return data;
     await new Promise((r) => setTimeout(r, 100));
   }
-  const fallback = readInitDataSync();
-  if (fallback) persistInitData(fallback);
-  return fallback;
+
+  return readStoredInitDataFallback();
+}
+
+async function fetchWithInitData(path: string, initData: string): Promise<Response> {
+  const pathWithQuery = path.startsWith('/') ? path : `/${path}`;
+  return fetch(`${API_URL}${pathWithQuery}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': initData,
+    },
+    body: JSON.stringify({ initData }),
+  });
 }
 
 async function fetchApi<T>(path: string): Promise<T> {
   if (!API_URL) {
     throw new Error('VITE_API_URL');
   }
-  const initData = await waitForInitData();
+
+  let initData = await waitForInitData();
   if (!initData) {
     throw new Error('NO_INIT_DATA');
   }
 
-  const pathWithQuery = path.startsWith('/') ? path : `/${path}`;
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${pathWithQuery}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Telegram-Init-Data': initData,
-      },
-      body: JSON.stringify({ initData }),
-    });
+    res = await fetchWithInitData(path, initData);
   } catch {
     throw new Error('NETWORK');
   }
 
-  if (!res.ok) {
-    if (res.status === 401) {
-      cachedInitData = '';
-      clearPersistedInitData();
+  if (res.status === 401) {
+    clearInitDataCache();
+    initData = await waitForInitData(8000);
+    if (initData) {
+      try {
+        res = await fetchWithInitData(path, initData);
+      } catch {
+        throw new Error('NETWORK');
+      }
     }
+  }
+
+  if (!res.ok) {
     throw new Error(`API_${res.status}`);
   }
   return res.json() as Promise<T>;
@@ -198,13 +207,13 @@ export interface PlayerProfile {
 export function apiErrorMessage(code: string): string {
   switch (code) {
     case 'NO_INIT_DATA':
-      return 'Нет данных Telegram. Не обновляйте страницу вручную — закройте Mini App (×) и откройте снова: 📊 Статистика → «Открыть статистику».';
+      return 'Нет данных Telegram. Закройте Mini App (×) и снова: 📊 Статистика → «Открыть статистику».';
     case 'VITE_API_URL':
       return 'Mini App не настроен (VITE_API_URL).';
     case 'NETWORK':
       return 'Нет связи с сервером. Проверьте интернет.';
     case 'API_401':
-      return 'Сессия устарела или неверный BOT_TOKEN на сервере. Закройте Mini App и откройте снова.';
+      return 'Сессия Telegram устарела. Закройте Mini App (×) и откройте снова из бота.';
     case 'API_404':
       return 'Сервер бота устарел — нужен deploy Worker.';
     default:
