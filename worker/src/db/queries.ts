@@ -1,6 +1,11 @@
 import type { SqlStorage } from '@cloudflare/workers-types';
 import { firstRow } from './query-helpers';
-import { demoGameTimestamps, monthGameDateFilter, statsSinceMs } from './stats-time';
+import {
+  demoGameTimestamps,
+  monthGameDateFilter,
+  SQL_GAME_DATE_MS,
+  statsSinceMs,
+} from './stats-time';
 import type {
   Game,
   GameResult,
@@ -61,6 +66,18 @@ function migrateSchema(sql: SqlStorage): void {
     `);
   } catch (e) {
     console.error('migrate game_invite_messages:', e);
+  }
+  migrateNormalizeGameDates(sql);
+}
+
+/** Исправить даты игр, сохранённые в секундах вместо миллисекунд. */
+export function migrateNormalizeGameDates(sql: SqlStorage): void {
+  try {
+    sql.exec(
+      'UPDATE games SET date = date * 1000 WHERE date > 0 AND date < 100000000000',
+    );
+  } catch (e) {
+    console.error('migrateNormalizeGameDates:', e);
   }
 }
 
@@ -304,19 +321,81 @@ export function getGameWithResults(sql: SqlStorage, gameId: number): GameWithRes
 }
 
 export function getLastGame(sql: SqlStorage): GameWithResults | null {
+  migrateNormalizeGameDates(sql);
   const since = statsSinceMs();
   const game = firstRow<Game>(
     sql,
     `SELECT g.* FROM games g
      WHERE g.status = 'finished'
-       AND g.date >= ?
+       AND ${SQL_GAME_DATE_MS} >= ?
        AND EXISTS (SELECT 1 FROM game_results gr WHERE gr.game_id = g.id)
-     ORDER BY g.date DESC
+     ORDER BY ${SQL_GAME_DATE_MS} DESC
      LIMIT 1`,
     since,
   );
   if (!game) return null;
   return getGameWithResults(sql, game.id);
+}
+
+export function getStatsDiagnostics(sql: SqlStorage): {
+  finishedGames: number;
+  resultRows: number;
+  resultsLinkedToPlayers: number;
+  orphanedResults: number;
+  gamesInStatsWindow: number;
+  minGameDate: number | null;
+  maxGameDate: number | null;
+  overallPlayers: number;
+} {
+  migrateNormalizeGameDates(sql);
+  const since = statsSinceMs();
+  const finishedGames =
+    firstRow<{ c: number }>(sql, "SELECT COUNT(*) as c FROM games WHERE status = 'finished'")?.c ??
+    0;
+  const resultRows =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(*) as c FROM game_results gr
+       JOIN games g ON g.id = gr.game_id WHERE g.status = 'finished'`,
+    )?.c ?? 0;
+  const resultsLinkedToPlayers =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(*) as c FROM game_results gr
+       JOIN games g ON g.id = gr.game_id
+       JOIN players p ON p.id = gr.player_id
+       WHERE g.status = 'finished'`,
+    )?.c ?? 0;
+  const orphanedResults =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(*) as c FROM game_results gr
+       JOIN games g ON g.id = gr.game_id
+       LEFT JOIN players p ON p.id = gr.player_id
+       WHERE g.status = 'finished' AND p.id IS NULL`,
+    )?.c ?? 0;
+  const gamesInStatsWindow =
+    firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(DISTINCT g.id) as c FROM games g
+       JOIN game_results gr ON gr.game_id = g.id
+       WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
+      since,
+    )?.c ?? 0;
+  const mm = firstRow<{ mn: number | null; mx: number | null }>(
+    sql,
+    "SELECT MIN(date) as mn, MAX(date) as mx FROM games WHERE status = 'finished'",
+  );
+  return {
+    finishedGames,
+    resultRows,
+    resultsLinkedToPlayers,
+    orphanedResults,
+    gamesInStatsWindow,
+    minGameDate: mm?.mn ?? null,
+    maxGameDate: mm?.mx ?? null,
+    overallPlayers: getOverall(sql).length,
+  };
 }
 
 export function getClubStatsSummary(sql: SqlStorage): {
@@ -326,6 +405,7 @@ export function getClubStatsSummary(sql: SqlStorage): {
   lastGameId: number | null;
   lastGamePlayers: number;
 } {
+  migrateNormalizeGameDates(sql);
   const since = statsSinceMs();
   const finishedGames =
     firstRow<{ c: number }>(
@@ -335,7 +415,7 @@ export function getClubStatsSummary(sql: SqlStorage): {
   const finishedGamesInStats =
     firstRow<{ c: number }>(
       sql,
-      "SELECT COUNT(*) as c FROM games WHERE status = 'finished' AND date >= ?",
+      `SELECT COUNT(*) as c FROM games g WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
       since,
     )?.c ?? 0;
   const overall = getOverall(sql);
@@ -373,22 +453,24 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
     return [];
   }
 
+  migrateNormalizeGameDates(sql);
   const rows = [
     ...sql
       .exec(
         `SELECT
-           p.id as player_id,
-           p.name,
+           gr.player_id as player_id,
+           COALESCE(p.name, 'Игрок #' || gr.player_id) as name,
            COUNT(DISTINCT g.id) as games_count,
            COALESCE(SUM(gr.profit), 0) as total_profit,
            COALESCE(MAX(gr.profit), 0) as best_game,
            COALESCE(MIN(gr.profit), 0) as worst_game,
            SUM(CASE WHEN gr.profit > 0 THEN 1 ELSE 0 END) as wins
-         FROM players p
-         JOIN game_results gr ON gr.player_id = p.id
+         FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE g.status = 'finished' AND g.date >= ? AND g.date < ?
-         GROUP BY p.id, p.name
+         LEFT JOIN players p ON p.id = gr.player_id
+         WHERE g.status = 'finished'
+           AND ${SQL_GAME_DATE_MS} >= ? AND ${SQL_GAME_DATE_MS} < ?
+         GROUP BY gr.player_id, p.name
          ORDER BY total_profit DESC`,
         range.fromInclusive,
         range.toExclusive,
@@ -411,22 +493,23 @@ export function getMonthStats(sql: SqlStorage, month: string): MonthStatRow[] {
 }
 
 export function getOverall(sql: SqlStorage): OverallStatRow[] {
+  migrateNormalizeGameDates(sql);
   const since = statsSinceMs();
   const rows = [
     ...sql
       .exec(
         `SELECT
-           p.id as player_id,
-           p.name,
+           gr.player_id as player_id,
+           COALESCE(p.name, 'Игрок #' || gr.player_id) as name,
            COUNT(DISTINCT g.id) as games_count,
            COALESCE(SUM(gr.profit), 0) as total_profit,
            COALESCE(SUM(gr.buyin), 0) as total_buyin,
            SUM(CASE WHEN gr.profit > 0 THEN 1 ELSE 0 END) as wins
-         FROM players p
-         JOIN game_results gr ON gr.player_id = p.id
+         FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE g.status = 'finished' AND g.date >= ?
-         GROUP BY p.id, p.name
+         LEFT JOIN players p ON p.id = gr.player_id
+         WHERE g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         GROUP BY gr.player_id, p.name
          ORDER BY total_profit DESC`,
         since,
       )
@@ -460,8 +543,8 @@ function computeStreak(sql: SqlStorage, playerId: number, since: number): number
         `SELECT gr.profit
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE gr.player_id = ? AND g.status = 'finished' AND g.date >= ?
-         ORDER BY g.date DESC
+         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         ORDER BY ${SQL_GAME_DATE_MS} DESC
          LIMIT 20`,
         playerId,
         since,
@@ -482,8 +565,25 @@ function computeStreak(sql: SqlStorage, playerId: number, since: number): number
 }
 
 export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfile | null {
-  const player = getPlayerById(sql, playerId);
-  if (!player) return null;
+  migrateNormalizeGameDates(sql);
+  let player = getPlayerById(sql, playerId);
+  if (!player) {
+    const hasResults = firstRow<{ c: number }>(
+      sql,
+      `SELECT COUNT(*) as c FROM game_results gr
+       JOIN games g ON g.id = gr.game_id
+       WHERE gr.player_id = ? AND g.status = 'finished'`,
+      playerId,
+    )?.c;
+    if (!hasResults) return null;
+    player = {
+      id: playerId,
+      name: `Игрок #${playerId}`,
+      telegram_id: null,
+      avatar_file_id: null,
+      created_at: 0,
+    };
+  }
 
   const since = statsSinceMs();
   const statsRow = firstRow<{ games_count: number; total_profit: number }>(
@@ -491,7 +591,7 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
     `SELECT COUNT(DISTINCT g.id) as games_count, COALESCE(SUM(gr.profit), 0) as total_profit
      FROM game_results gr
      JOIN games g ON g.id = gr.game_id
-     WHERE gr.player_id = ? AND g.status = 'finished' AND g.date >= ?`,
+     WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?`,
     playerId,
     since,
   );
@@ -502,8 +602,8 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
         `SELECT g.id as game_id, g.date, gr.profit
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE gr.player_id = ? AND g.status = 'finished' AND g.date >= ?
-         ORDER BY g.date ASC`,
+         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         ORDER BY ${SQL_GAME_DATE_MS} ASC`,
         playerId,
         since,
       )
@@ -522,8 +622,8 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
         `SELECT g.id as game_id, g.date, gr.buyin, gr.payout, gr.profit, gr.place
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
-         WHERE gr.player_id = ? AND g.status = 'finished' AND g.date >= ?
-         ORDER BY g.date DESC
+         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_DATE_MS} >= ?
+         ORDER BY ${SQL_GAME_DATE_MS} DESC
          LIMIT 10`,
         playerId,
         since,

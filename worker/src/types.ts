@@ -96,6 +96,7 @@ export type DoAction =
   | { action: 'listFinishedGames'; limit?: number }
   | { action: 'getLastGame' }
   | { action: 'getClubStatsSummary' }
+  | { action: 'getStatsDiagnostics' }
   | { action: 'getMonthStats'; month: string }
   | { action: 'getOverall' }
   | { action: 'getPlayer'; playerId: number }

@@ -5,6 +5,12 @@ export function statsSinceMs(nowMs: number = Date.now()): number {
   return nowMs - STATS_RETENTION_MS;
 }
 
+/**
+ * Дата игры в БД: миллисекунды. Старые записи могли сохраниться в секундах — приводим в SQL.
+ * Порог 1e11: секунды 2026 (~1.7e9) < 1e11; ms 2026 (~1.7e12) > 1e11.
+ */
+export const SQL_GAME_DATE_MS = `(CASE WHEN g.date < 100000000000 THEN g.date * 1000 ELSE g.date END)`;
+
 /** Календарный месяц `YYYY-MM` в UTC. */
 export function monthRangeUtc(month: string): { start: number; end: number } {
   const [year, mon] = month.split('-').map(Number);

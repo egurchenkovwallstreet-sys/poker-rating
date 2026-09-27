@@ -169,10 +169,15 @@ export function createBot(env: Env): Bot {
       };
     }>(env, { action: 'getClubStatsSummary' });
     const s = summary.summary;
-    const dbLine =
+    let dbLine =
       s.finishedGames > 0
         ? `В базе: ${s.finishedGames} завершённых игр (в рейтинге за 2 года: ${s.playersInRating} игроков).\nПоследняя игра: ${s.lastGamePlayers} участников.\n\n`
         : '⚠️ В базе пока нет завершённых игр. Админ: /seeddemo или введите результаты игры.\n\n';
+    if (s.finishedGames > 0 && s.playersInRating === 0) {
+      dbLine =
+        `⚠️ Игры есть (${s.finishedGames}), но рейтинг пуст — нужен deploy worker с fix.\n` +
+        `Админ: /statsdebug\n\n`;
+    }
     await ctx.reply(`${dbLine}👇 Откройте Mini App:`, {
       reply_markup: statsInlineKeyboard(env.WEBAPP_URL),
     });
@@ -300,6 +305,35 @@ export function createBot(env: Env): Bot {
   }
 
   bot.command('seeddemo', runSeedDemo);
+
+  bot.command('statsdebug', async (ctx) => {
+    if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
+    const res = await callDo<{
+      ok: boolean;
+      diagnostics: {
+        finishedGames: number;
+        resultRows: number;
+        resultsLinkedToPlayers: number;
+        orphanedResults: number;
+        gamesInStatsWindow: number;
+        minGameDate: number | null;
+        maxGameDate: number | null;
+        overallPlayers: number;
+      };
+    }>(env, { action: 'getStatsDiagnostics' });
+    const d = res.diagnostics;
+    const fmt = (n: number | null) => (n == null ? '—' : new Date(n).toISOString());
+    await ctx.reply(
+      `🔍 Диагностика статистики\n\n` +
+        `Завершённых игр: ${d.finishedGames}\n` +
+        `Строк результатов: ${d.resultRows}\n` +
+        `С привязкой к игрокам: ${d.resultsLinkedToPlayers}\n` +
+        `Без игрока (осиротевшие): ${d.orphanedResults}\n` +
+        `Игр в окне 2 года: ${d.gamesInStatsWindow}\n` +
+        `Игроков в рейтинге (API): ${d.overallPlayers}\n` +
+        `Дата min/max: ${fmt(d.minGameDate)} … ${fmt(d.maxGameDate)}`,
+    );
+  });
 
   bot.command('players', async (ctx) => {
     if (!checkAdmin(ctx.from!.id)) return ctx.reply('⛔ Доступ запрещён');
