@@ -965,46 +965,56 @@ export function getPlayerProfile(sql: SqlStorage, playerId: number): PlayerProfi
     playerId,
     since,
   );
-  const stats = statsRow ?? { games_count: 0, total_profit: 0 };
-  const gameProfits = [
-    ...sql
-      .exec(
-        `SELECT g.id as game_id, g.date, gr.profit
-         FROM game_results gr
-         JOIN games g ON g.id = gr.game_id
-         WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_IN_STATS}
-         ORDER BY ${SQL_GAME_DATE_MS} ASC`,
-        playerId,
-        since,
-      )
-      .toArray(),
-  ] as Array<{ game_id: number; date: number; profit: number }>;
-
-  let cumulative = 0;
-  const chart = gameProfits.map((g) => {
-    cumulative += g.profit;
-    return { ...g, cumulative };
-  });
-
-  const history = [
+  const gameRows = [
     ...sql
       .exec(
         `SELECT g.id as game_id, g.date, gr.buyin, gr.payout, gr.profit, gr.place
          FROM game_results gr
          JOIN games g ON g.id = gr.game_id
          WHERE gr.player_id = ? AND g.status = 'finished' AND ${SQL_GAME_IN_STATS}
-         ORDER BY ${SQL_GAME_DATE_MS} DESC
-         LIMIT 10`,
+         ORDER BY ${SQL_GAME_DATE_MS} ASC, g.id ASC`,
         playerId,
         since,
       )
       .toArray(),
-  ] as PlayerProfile['history'];
+  ] as Array<{
+    game_id: number;
+    date: number;
+    buyin: number;
+    payout: number;
+    profit: number;
+    place: number | null;
+  }>;
+
+  let cumulative = 0;
+  const chart = gameRows.map((g) => {
+    cumulative += g.profit;
+    return {
+      game_id: g.game_id,
+      date: g.date,
+      profit: g.profit,
+      cumulative,
+    };
+  });
+
+  /** Новые сверху; тот же набор игр, что и на графике (без LIMIT 10). */
+  const history = [...gameRows].reverse().map((g) => ({
+    game_id: g.game_id,
+    date: g.date,
+    buyin: g.buyin,
+    payout: g.payout,
+    profit: g.profit,
+    place: g.place,
+  }));
+
+  const games_count = gameRows.length;
+  const total_profit = cumulative;
+  const stats = statsRow ?? { games_count: 0, total_profit: 0 };
 
   return {
     player,
-    games_count: stats.games_count,
-    total_profit: stats.total_profit,
+    games_count: games_count > 0 ? games_count : stats.games_count,
+    total_profit: games_count > 0 ? total_profit : stats.total_profit,
     chart,
     history,
   };

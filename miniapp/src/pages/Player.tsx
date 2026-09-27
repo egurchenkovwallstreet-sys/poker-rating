@@ -88,7 +88,9 @@ export default function Player({ playerId, onSelectPlayer }: Props) {
 
       {profile.chart.length > 0 && (
         <div className="card mb-3">
-          <div className="text-sm text-tg-hint mb-2">Динамика (кумулятивный +/-)</div>
+          <div className="text-sm text-tg-hint mb-2">
+            Динамика (кумулятивный +/-) · последняя точка = итого
+          </div>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={profile.chart}>
               <XAxis
@@ -109,7 +111,14 @@ export default function Player({ playerId, onSelectPlayer }: Props) {
       )}
 
       <div className="card">
-        <div className="text-sm text-tg-hint mb-2">История игр</div>
+        <div className="text-sm text-tg-hint mb-2">
+          История игр
+          {profile.history.length > 0 && profile.history.length === profile.games_count
+            ? ` (${profile.games_count})`
+            : profile.history.length > 0
+              ? ` (показано ${profile.history.length} из ${profile.games_count})`
+              : ''}
+        </div>
         {profile.history.length === 0 ? (
           <div className="text-center text-tg-hint text-sm">Нет игр в окне 2 года</div>
         ) : (
