@@ -182,9 +182,12 @@ export class PokerRoom implements DurableObject {
         case 'listRegisteredPlayers':
           return json({ ok: true, players: announce.listRegisteredPlayers(this.sql) });
         case 'setGameRsvp': {
-          const gameId = announce.normalizeGameId(body.gameId);
-          const playerId = announce.normalizeGameId(body.playerId);
-          const result = announce.setGameRsvp(this.sql, gameId, playerId, body.response);
+          const result = announce.setGameRsvp(
+            this.sql,
+            announce.normalizeGameId(body.gameId),
+            body.playerId,
+            body.response,
+          );
           if (!result.ok) return json({ ok: false, error: result.error }, 400);
           return json({ ok: true, ...result });
         }

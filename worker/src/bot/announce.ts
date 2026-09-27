@@ -322,6 +322,8 @@ export async function handleGameRsvp(
     registrationClosed?: boolean;
     yesCount?: number;
     queueOrder?: number | null;
+    effectiveGameId?: number;
+    clickedGameId?: number;
   };
   try {
     result = await callDo(env, {
@@ -340,9 +342,11 @@ export async function handleGameRsvp(
     return;
   }
 
+  const activeGameId = result.effectiveGameId ?? gameId;
+
   const gameRes = await callDo<{ ok: boolean; game: Game }>(env, {
     action: 'getGameById',
-    gameId,
+    gameId: activeGameId,
   });
   const game = gameRes.game;
   if (!game) {
@@ -353,14 +357,14 @@ export async function handleGameRsvp(
   const queueRes = await callDo<{
     ok: boolean;
     entries: Array<{ queue_order: number; name: string; player_id: number }>;
-  }>(env, { action: 'listRsvpYesWithQueue', gameId });
+  }>(env, { action: 'listRsvpYesWithQueue', gameId: activeGameId });
 
   if (response === 'yes') {
     const pid = Number(playerRes.player!.id);
     const me = queueRes.entries?.find((e) => Number(e.player_id) === pid);
     if (!me) {
       await ctx.answerCallbackQuery({
-        text: `Вы не в очереди игры #${gameId}. Нужен свежий анонс с 🆔 #${gameId}.`,
+        text: `Вы не в очереди игры #${activeGameId}. Нужен свежий анонс с 🆔 #${activeGameId}.`,
         show_alert: true,
       });
       await ctx.reply(
@@ -375,21 +379,25 @@ export async function handleGameRsvp(
     const totalYes = queueRes.entries.length;
     const cap = game.max_players > 0 ? game.max_players : Math.max(totalYes, 8);
     const queueLine = queueRes.entries.map((e) => `${e.queue_order}. ${e.name}`).join(', ');
+    const idNote =
+      result.clickedGameId != null && result.clickedGameId !== activeGameId
+        ? ` (кнопка #${result.clickedGameId} → запись на #${activeGameId})`
+        : '';
     await ctx.answerCallbackQuery({
-      text: `Игра #${gameId}: место ${spot} из ${cap} (записано: ${totalYes})`,
+      text: `Игра #${activeGameId}: место ${spot} из ${cap} (записано: ${totalYes})${idNote}`,
       show_alert: true,
     });
     const short =
-      `✅ ${playerRes.player.name} — место ${spot} на игре #${gameId} (всего записано: ${totalYes}).\n` +
+      `✅ ${playerRes.player.name} — место ${spot} на игре #${activeGameId} (всего: ${totalYes}).\n` +
       `Очередь: ${queueLine}`;
     await notifyAllRegistered(ctx.api, env, short);
-    await refreshClickerInviteMessage(ctx, env, gameId, game, telegramId);
+    await refreshClickerInviteMessage(ctx, env, activeGameId, game, telegramId);
   } else {
     await ctx.answerCallbackQuery({ text: 'Понятно, без вас' });
-    await refreshClickerInviteMessage(ctx, env, gameId, game, telegramId);
+    await refreshClickerInviteMessage(ctx, env, activeGameId, game, telegramId);
   }
 
-  await syncAllInviteMessages(ctx.api, env, gameId, game);
+  await syncAllInviteMessages(ctx.api, env, activeGameId, game);
 
   if (result.registrationClosed) {
     const admins = parseAdminIds(env.ADMIN_IDS);
